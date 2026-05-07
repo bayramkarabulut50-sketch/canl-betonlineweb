@@ -1,0 +1,20 @@
+{
+  "name": "canlibet-scraper-service",
+  "version": "10.81.0",
+  "description": "CanliBet live data scraper backend",
+  "main": "server.js",
+  "scripts": {
+    "start":             "node server.js",
+    "dev":               "node --watch server.js",
+    "install-playwright":"npx playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors":    "^2.8.5"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.43.0"
+  },
+  "engines": { "node": ">=18" },
+  "license":  "MIT"
+}
