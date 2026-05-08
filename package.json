@@ -1,6 +1,6 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "10.83.0",
+  "version": "10.84.0",
   "description": "CanliBet live data scraper backend — HTTP-only fetch adapters",
   "main": "server.js",
   "scripts": {

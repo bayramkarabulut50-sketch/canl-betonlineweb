@@ -102,7 +102,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.83', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.84', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot ? Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s' : null,
   adapters: ADAPTERS.map(a=>({ provider:a.provider, needsPlaywright:!!a.needsPlaywright })),
   env:{ PORT, CACHE_TTL_MS, ENABLE_MOCK_SOURCE:ENABLE_MOCK, ENABLE_SOFASCORE_SOURCE:ENABLE_SOFASCORE, playwrightActive:_pwAvailable===true },
