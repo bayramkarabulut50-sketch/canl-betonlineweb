@@ -1,7 +1,7 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "10.81.0",
-  "description": "CanliBet live data scraper backend",
+  "version": "10.83.0",
+  "description": "CanliBet live data scraper backend — HTTP-only fetch adapters",
   "main": "server.js",
   "scripts": {
     "start":             "node server.js",
@@ -16,5 +16,5 @@
     "playwright": "^1.43.0"
   },
   "engines": { "node": ">=18" },
-  "license":  "MIT"
+  "license": "MIT"
 }

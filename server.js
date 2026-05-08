@@ -49,11 +49,11 @@ global._scraperLazyGetBrowser = lazyGetBrowser;
 // ── Load only enabled adapters ────────────────────────────────────────────────
 const ADAPTERS = [];
 if (ENABLE_MOCK)       { ADAPTERS.push(require('./sources/source_mock'));       log('Adapter: mock (HTTP-only)'); }
-if (ENABLE_SOFASCORE)  { ADAPTERS.push(require('./sources/source_sofascore'));  log('Adapter: sofascore (Playwright)'); }
+if (ENABLE_SOFASCORE)  { ADAPTERS.push(require('./sources/source_sofascore'));  log('Adapter: sofascore (HTTP-only, no Playwright)'); }
 if (ENABLE_FLASHSCORE) { ADAPTERS.push(require('./sources/source_flashscore')); log('Adapter: flashscore (Playwright)'); }
 if (ENABLE_ODDSPORTAL) { ADAPTERS.push(require('./sources/source_oddsportal')); log('Adapter: oddsportal (Playwright)'); }
 
-const anyPlaywright = ENABLE_SOFASCORE || ENABLE_FLASHSCORE || ENABLE_ODDSPORTAL;
+const anyPlaywright = ENABLE_FLASHSCORE || ENABLE_ODDSPORTAL; // sofascore is now HTTP-only
 if (!anyPlaywright) log('Chromium disabled / skipped — no Playwright adapter active');
 
 log(`CanliBet scraper service v10.81 — adapters: ${ADAPTERS.map(a=>a.provider).join(', ') || '(none)'}`);
@@ -102,7 +102,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.81', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.83', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot ? Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s' : null,
   adapters: ADAPTERS.map(a=>({ provider:a.provider, needsPlaywright:!!a.needsPlaywright })),
   env:{ PORT, CACHE_TTL_MS, ENABLE_MOCK_SOURCE:ENABLE_MOCK, ENABLE_SOFASCORE_SOURCE:ENABLE_SOFASCORE, playwrightActive:_pwAvailable===true },
