@@ -83,7 +83,8 @@ function makeCanonical(raw, source) {
   const status = safeStr(raw.match_status ?? raw.status ?? raw.state ?? '');
   const live   = raw.match_live === '1' || raw.match_live === true || isLiveStatus(status);
 
-  // stats object — all fields optional
+  // stats object — all fields optional.
+  // Adapter may pre-fill canonical stats (e.g. ESPN). Use them; fill gaps from rawStats aliases.
   const rawStats = raw.stats || raw.statistics || {};
   const stats = {
     attacks:           safeNum(rawStats.attacks),
@@ -93,6 +94,8 @@ function makeCanonical(raw, source) {
     corners:           safeNum(rawStats.corners),
     possession_home:   safeNum(rawStats.possession_home ?? rawStats.possessionHome),
     possession_away:   safeNum(rawStats.possession_away ?? rawStats.possessionAway),
+    yellow_cards:      safeNum(rawStats.yellow_cards ?? rawStats.yellowCards),
+    red_cards:         safeNum(rawStats.red_cards   ?? rawStats.redCards),
   };
 
   // odds object — all fields optional
