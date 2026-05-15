@@ -85,8 +85,12 @@ function normEspnEvent(ev, acceptScheduled = false) {
     };
   }
 
+  const match_id = safeStr(ev.id || comp.id || '');
+  // Log if match_id empty — would break detail fetch
+  if (!match_id) console.log('[espn-details] WARNING: event has no id', JSON.stringify(ev).slice(0,100));
+
   return {
-    match_id:             safeStr(ev.id || comp.id),
+    match_id,
     match_hometeam_name:  safeStr((home.team||{}).displayName||(home.team||{}).name||(home.team||{}).abbreviation),
     match_awayteam_name:  safeStr((away.team||{}).displayName||(away.team||{}).name||(away.team||{}).abbreviation),
     match_hometeam_score: safeNum(home.score, 0),
@@ -95,7 +99,7 @@ function normEspnEvent(ev, acceptScheduled = false) {
     match_status:         ms,
     minute,
     league_name:          leagueName,
-    _leagueSlug:          ev._leagueSlug || '',
+    _leagueSlug:          ev._leagueSlug || '',   // passed from probe() loop
     source:               'espn',
     _espnStatusType:      typeName,
     _isScheduled:         isScheduled,
@@ -184,13 +188,19 @@ async function fetchEventDetails(leagueSlug, eventId) {
 
   for (const url of urls) {
     debug.testedEndpoints.push(url);
+    console.log(`[espn-details] fetching summary url ${url}`);
     const res = await client.get(url);
-    if (!res.ok || !res.contentType.includes('json')) continue;
+    console.log(`[espn-details] summary status=${res.status} ok=${res.ok} ct=${(res.contentType||'').slice(0,30)}`);
+    if (!res.ok || !res.contentType.includes('json')) {
+      console.log(`[espn-details] DETAIL_PARSE_FAILED — bad response status=${res.status} ct=${res.contentType||''}`);
+      continue;
+    }
 
     let data;
     try { data = JSON.parse(res.text); } catch(e) { continue; }
 
     debug.successfulEndpoints.push(url);
+    console.log(`[espn-details] stats keys=${Object.keys(data||{}).join(',').slice(0,100)}`);
     const extracted = extractEspnStats(data);
     if (extracted) {
       debug.discoveredKeys  = extracted.discoveredKeys;
@@ -285,32 +295,49 @@ async function probe(endpoint, opts = {}) {
 
   const liveOnly=raw.filter(m=>m.match_live==='1');
 
-  // ── Stats discovery for live matches (max 3 to avoid hammering) ──
-  if (fetchStats && liveOnly.length > 0) {
+  // ── Stats discovery for live matches ─────────────────────────────────────
+  console.log(`[espn-details] pipeline check: fetchStats=${fetchStats} liveCount=${liveOnly.length} slug=${slug}`);
+  if (!fetchStats) {
+    console.log('[espn-details] DETAIL_FETCH_SKIPPED — fetchStats=false (check probe() call opts)');
+  } else if (liveOnly.length === 0) {
+    console.log('[espn-details] DETAIL_FETCH_SKIPPED — no live matches to fetch details for');
+  } else {
     const toFetch = liveOnly.slice(0, 3);
     for (const m of toFetch) {
+      const eventId    = m.match_id;
+      const eventSlug  = m._leagueSlug || slug;
+      console.log(`[espn-details] entering detail pipeline eventId=${eventId} slug=${eventSlug} match="${m.match_hometeam_name} vs ${m.match_awayteam_name}"`);
+      if (!eventId) {
+        console.log('[espn-details] DETAIL_FETCH_SKIPPED — eventId empty');
+        base.espnDetailsDebug.push({ eventId:'', failReason:'DETAIL_FETCH_SKIPPED_NO_ID' });
+        continue;
+      }
       base.detailEndpointsTried++;
-      const details = await fetchEventDetails(m._leagueSlug || slug, m.match_id);
+      const details = await fetchEventDetails(eventSlug, eventId);
+      console.log(`[espn-details] result eventId=${eventId} ok=${details.ok} hasStats=${!!details.stats} statsKeys=${details.stats?Object.keys(details.stats).filter(k=>details.stats[k]!==null).join(','):'none'}`);
       base.espnDetailsDebug.push({
-        eventId:     m.match_id,
-        match:       `${m.match_hometeam_name} vs ${m.match_awayteam_name}`,
+        eventId, match:`${m.match_hometeam_name} vs ${m.match_awayteam_name}`,
         ...details.debug,
       });
       if (details.ok) {
         base.detailEndpointsSuccess++;
         if (details.stats) {
           m.stats    = details.stats;
-          m.hasStats = details.stats && Object.values(details.stats).some(v=>v!==null);
-          if (m.hasStats) base.hasStatistics = true;
+          m.hasStats = Object.values(details.stats).some(v => v !== null);
+          if (m.hasStats) { base.hasStatistics = true; console.log(`[espn-details] stats ok eventId=${eventId} keys=${Object.keys(details.stats).filter(k=>details.stats[k]!==null).join(',')}`); }
         }
-        if (details.odds && Object.values(details.odds).some(v=>v!==null)) {
+        if (details.odds && Object.values(details.odds).some(v => v !== null)) {
           m.odds    = Object.assign({}, m.odds, details.odds);
           m.hasOdds = true;
           base.hasOdds = true;
+          console.log(`[espn-details] odds ok eventId=${eventId}`);
         }
+      } else {
+        console.log(`[espn-details] DETAIL_FETCH_FAILED eventId=${eventId} reason=${JSON.stringify(details.debug)}`);
+        m.stats    = {};
+        m.hasStats = false;
       }
     }
-    // Matches without stats get empty
     for (const m of liveOnly.slice(3)) { m.stats={}; m.hasStats=false; }
   }
 
