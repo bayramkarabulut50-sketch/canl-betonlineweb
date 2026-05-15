@@ -50,8 +50,22 @@ const client = createHttpClient({
 });
 
 const ESPN_LIVE = new Set([
-  'STATUS_IN_PROGRESS','STATUS_HALFTIME','STATUS_END_PERIOD',
-  'STATUS_EXTRA_TIME','STATUS_PENALTY','STATUS_OVERTIME',
+  // Standard ESPN status strings
+  'STATUS_IN_PROGRESS',
+  'STATUS_HALFTIME',
+  'STATUS_END_PERIOD',
+  'STATUS_EXTRA_TIME',
+  'STATUS_PENALTY',
+  'STATUS_OVERTIME',
+  // Real ESPN soccer status strings (observed in production)
+  'STATUS_FIRST_HALF',
+  'STATUS_SECOND_HALF',
+  'STATUS_HALF_TIME',
+  'STATUS_EXTRA_TIME_HALF_TIME',
+  'STATUS_FIRST_EXTRA',
+  'STATUS_SECOND_EXTRA',
+  'STATUS_AWAITING_PENALTIES',
+  'STATUS_PENALTY_SHOOTOUT',
 ]);
 const ESPN_SCHEDULED = new Set(['STATUS_SCHEDULED','STATUS_PREGAME']);
 
@@ -61,16 +75,36 @@ function normEspnEvent(ev, acceptScheduled = false) {
   const comp     = (ev.competitions || [])[0] || {};
   const statusType = (comp.status && comp.status.type) || (ev.status && ev.status.type) || {};
   const typeName   = statusType.name || statusType.state || '';
-  const isLive     = ESPN_LIVE.has(typeName);
-  const isScheduled= ESPN_SCHEDULED.has(typeName);
-  if (!isLive && !(acceptScheduled && isScheduled)) return null;
+  const isLive      = ESPN_LIVE.has(typeName);
+  const isScheduled = ESPN_SCHEDULED.has(typeName);
+  const eventId     = safeStr(ev.id || (ev.competitions&&ev.competitions[0]&&ev.competitions[0].id) || '');
+
+  // Per-event filter log — always emitted so Render shows exactly what's happening
+  console.log(`[espn-filter] id=${eventId} status="${typeName}" isLive=${isLive} isScheduled=${isScheduled} accepted=${isLive || (isScheduled)}`);
+
+  if (!typeName) {
+    console.log(`[espn-filter] REJECT_NO_STATUS id=${eventId}`);
+    return null;
+  }
+  if (!isLive && !(acceptScheduled && isScheduled)) {
+    console.log(`[espn-filter] REJECT_NOT_LIVE id=${eventId} status="${typeName}"`);
+    return null;
+  }
 
   const competitors = comp.competitors || ev.competitors || [];
   const home = competitors.find(c => c.homeAway==='home') || competitors[0] || {};
   const away = competitors.find(c => c.homeAway==='away') || competitors[1] || {};
   const clock  = statusType.displayClock || (comp.status && comp.status.displayClock) || '';
   const minute = clock ? safeNum(parseInt(clock)) : safeNum(statusType.period);
-  const ms     = typeName==='STATUS_HALFTIME'?'HT':typeName==='STATUS_EXTRA_TIME'?'ET':typeName==='STATUS_PENALTY'?'PEN':isScheduled?'SCH':'1H';
+  const ms = (
+    (typeName==='STATUS_HALFTIME'||typeName==='STATUS_HALF_TIME') ? 'HT' :
+    (typeName==='STATUS_FIRST_HALF'||typeName==='STATUS_IN_PROGRESS') ? '1H' :
+    (typeName==='STATUS_SECOND_HALF') ? '2H' :
+    (typeName==='STATUS_EXTRA_TIME'||typeName==='STATUS_FIRST_EXTRA'||typeName==='STATUS_SECOND_EXTRA'||typeName==='STATUS_EXTRA_TIME_HALF_TIME') ? 'ET' :
+    (typeName==='STATUS_PENALTY'||typeName==='STATUS_PENALTY_SHOOTOUT'||typeName==='STATUS_AWAITING_PENALTIES') ? 'PEN' :
+    typeName==='STATUS_OVERTIME' ? 'OT' :
+    isScheduled ? 'SCH' : 'LIVE'
+  );
   const leagueName = safeStr((ev.season&&ev.season.displayName)||(ev.league&&ev.league.name)||'');
 
   // Odds from scoreboard level (sometimes present)
