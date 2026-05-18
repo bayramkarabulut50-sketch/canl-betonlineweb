@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v10.99-global-live-coverage
+ * source_espn_json.js v11.00-no-fake-mock-global-audit
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
