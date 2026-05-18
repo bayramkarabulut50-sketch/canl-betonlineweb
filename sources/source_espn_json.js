@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.00-no-fake-mock-global-audit
+ * source_espn_json.js v11.01-live-status-final
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -86,37 +86,95 @@ const client = createHttpClient({
 });
 
 const ESPN_LIVE = new Set([
-  // Standard ESPN status strings
+  // ESPN soccer status.type.name values
   'STATUS_IN_PROGRESS',
   'STATUS_HALFTIME',
+  'STATUS_HALF_TIME',
   'STATUS_END_PERIOD',
-  'STATUS_EXTRA_TIME',
-  'STATUS_PENALTY',
-  'STATUS_OVERTIME',
-  // Real ESPN soccer status strings (observed in production)
   'STATUS_FIRST_HALF',
   'STATUS_SECOND_HALF',
-  'STATUS_HALF_TIME',
+  'STATUS_EXTRA_TIME',
   'STATUS_EXTRA_TIME_HALF_TIME',
   'STATUS_FIRST_EXTRA',
   'STATUS_SECOND_EXTRA',
+  'STATUS_OVERTIME',
+  'STATUS_PENALTY',
   'STATUS_AWAITING_PENALTIES',
   'STATUS_PENALTY_SHOOTOUT',
+
+  // ESPN sometimes exposes state/detail style values instead of name
+  'IN',
+  'LIVE',
+  'HALFTIME',
+  'HALF_TIME',
+  '1H',
+  '2H',
+  'HT',
+  'ET',
+  'PEN'
 ]);
-const ESPN_SCHEDULED = new Set(['STATUS_SCHEDULED','STATUS_PREGAME']);
+
+const ESPN_SCHEDULED = new Set([
+  'STATUS_SCHEDULED',
+  'STATUS_PREGAME',
+  'PRE',
+  'SCHEDULED'
+]);
+
+const ESPN_FINAL = new Set([
+  'STATUS_FULL_TIME',
+  'STATUS_FINAL',
+  'STATUS_FINAL_PEN',
+  'STATUS_FINAL_AET',
+  'FULL_TIME',
+  'FINAL',
+  'POST'
+]);
+
+function normalizeEspnStatus(statusType = {}) {
+  const parts = [
+    statusType.name,
+    statusType.state,
+    statusType.detail,
+    statusType.shortDetail,
+    statusType.description
+  ].filter(Boolean).map(x => String(x).trim().toUpperCase());
+  return parts;
+}
+
+function isEspnLiveStatus(statusType = {}) {
+  const parts = normalizeEspnStatus(statusType);
+  if (parts.some(p => ESPN_LIVE.has(p))) return true;
+  // Some payloads have state:"in" but name/detail empty.
+  if (parts.includes('IN')) return true;
+  return false;
+}
+
+function isEspnScheduledStatus(statusType = {}) {
+  const parts = normalizeEspnStatus(statusType);
+  return parts.some(p => ESPN_SCHEDULED.has(p));
+}
+
+function isEspnFinalStatus(statusType = {}) {
+  const parts = normalizeEspnStatus(statusType);
+  if (statusType.completed === true) return true;
+  return parts.some(p => ESPN_FINAL.has(p));
+}
 
 // ── Event normalizer (scoreboard payload) ─────────────────────────────────────
 function normEspnEvent(ev, acceptScheduled = false) {
   if (!ev) return null;
   const comp     = (ev.competitions || [])[0] || {};
   const statusType = (comp.status && comp.status.type) || (ev.status && ev.status.type) || {};
-  const typeName   = statusType.name || statusType.state || '';
-  const isLive      = ESPN_LIVE.has(typeName);
-  const isScheduled = ESPN_SCHEDULED.has(typeName);
+  const statusParts = normalizeEspnStatus(statusType);
+  const typeName   = statusParts[0] || '';
+  const isLive      = isEspnLiveStatus(statusType);
+  const isScheduled = isEspnScheduledStatus(statusType);
+  const isFinal     = isEspnFinalStatus(statusType);
   const eventId     = safeStr(ev.id || (ev.competitions&&ev.competitions[0]&&ev.competitions[0].id) || '');
 
   // Per-event filter log — always emitted so Render shows exactly what's happening
-  console.log(`[espn-filter] id=${eventId} status="${typeName}" isLive=${isLive} isScheduled=${isScheduled} accepted=${isLive || (isScheduled)}`);
+  console.log(`[espn-filter] id=${eventId} status="${typeName}" parts=${JSON.stringify(statusParts)} completed=${!!statusType.completed} isLive=${isLive} isScheduled=${isScheduled} isFinal=${isFinal} accepted=${isLive}`);
 
   if (!typeName) {
     console.log(`[espn-filter] REJECT_NO_STATUS id=${eventId}`);
