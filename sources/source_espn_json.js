@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v10.94-canonical-stats-mapping
+ * source_espn_json.js v10.99-global-live-coverage
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -11,15 +11,45 @@ const { createHttpClient } = require('../http-client');
 const { safeNum, safeStr, normalizeMatches } = require('../normalizer');
 
 const LEAGUE_SLUGS = [
-  'all', 'eng.1', 'esp.1', 'ger.1', 'ita.1', 'fra.1',
-  'tur.1', 'uefa.champions', 'uefa.europa', 'usa.1',
+  // Broad ESPN public soccer JSON coverage.
+  // Some slugs may return 404 depending on region/season; probe skips gracefully.
+  'all',
+
+  // Europe top leagues
+  'eng.1', 'eng.2', 'eng.3',
+  'esp.1', 'esp.2',
+  'ger.1', 'ger.2',
+  'ita.1', 'ita.2',
+  'fra.1', 'fra.2',
+  'ned.1', 'por.1', 'bel.1', 'sco.1', 'tur.1',
+
+  // International / UEFA
+  'uefa.champions',
+  'uefa.europa',
+  'uefa.europa.conf',
+  'uefa.nations',
+  'fifa.world',
+  'fifa.friendly',
+
+  // Americas
+  'usa.1', 'usa.nwsl',
+  'mex.1',
+  'bra.1',
+  'arg.1',
+  'conmebol.libertadores',
+  'conmebol.sudamericana',
+
+  // Asia / other commonly available ESPN slugs
+  'ind.1', 'aus.1', 'jpn.1', 'kor.1',
+  'ksa.1',
 ];
 const BASE      = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const SITE_BASE = 'https://site.web.api.espn.com/apis/site/v2/sports/soccer';
 const WEB_BASE  = 'https://site.web.api.espn.com/apis/v2/sports/soccer';
 const FORCE_ESPN_DETAILS = process.env.FORCE_ESPN_DETAILS !== 'false';
 const ALL_ENDPOINTS    = LEAGUE_SLUGS.map(s => `${BASE}/${s}/scoreboard`);
-const PRIMARY_ENDPOINTS = LEAGUE_SLUGS.slice(0, 5).map(s => `${BASE}/${s}/scoreboard`);
+// v10.99: scan all configured slugs in /live, not only first 5. This fixes false 0-live when active games are outside top-5 slugs.
+const PRIMARY_ENDPOINTS = LEAGUE_SLUGS.map(s => `${BASE}/${s}/scoreboard`);
 
 // Per-event detail endpoint patterns
 const DETAIL_PATHS = ['summary'];
