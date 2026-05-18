@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.01-live-status-final
+ * source_espn_json.js v11.03-source-coverage-audit
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -11,37 +11,35 @@ const { createHttpClient } = require('../http-client');
 const { safeNum, safeStr, normalizeMatches } = require('../normalizer');
 
 const LEAGUE_SLUGS = [
-  // Broad ESPN public soccer JSON coverage.
-  // Some slugs may return 404 depending on region/season; probe skips gracefully.
+  // Broad ESPN public soccer JSON coverage. Invalid slugs fail gracefully.
   'all',
 
-  // Europe top leagues
-  'eng.1', 'eng.2', 'eng.3',
-  'esp.1', 'esp.2',
-  'ger.1', 'ger.2',
-  'ita.1', 'ita.2',
-  'fra.1', 'fra.2',
-  'ned.1', 'por.1', 'bel.1', 'sco.1', 'tur.1',
+  // Europe
+  'eng.1','eng.2','eng.3','eng.4','eng.5',
+  'esp.1','esp.2',
+  'ger.1','ger.2',
+  'ita.1','ita.2',
+  'fra.1','fra.2',
+  'ned.1','por.1','bel.1','sco.1','tur.1',
+  'gre.1','den.1','nor.1','swe.1','fin.1','pol.1','aut.1','sui.1',
+  'cze.1','cro.1','ser.1','rom.1','bul.1','ukr.1','rus.1',
 
-  // International / UEFA
-  'uefa.champions',
-  'uefa.europa',
-  'uefa.europa.conf',
-  'uefa.nations',
-  'fifa.world',
-  'fifa.friendly',
+  // UEFA / international
+  'uefa.champions','uefa.europa','uefa.europa.conf','uefa.nations',
+  'fifa.world','fifa.friendly','fifa.worldq','uefa.euro',
 
   // Americas
-  'usa.1', 'usa.nwsl',
-  'mex.1',
-  'bra.1',
-  'arg.1',
-  'conmebol.libertadores',
-  'conmebol.sudamericana',
+  'usa.1','usa.nwsl','usa.usl.1','usa.open',
+  'mex.1','mex.2',
+  'bra.1','bra.2',
+  'arg.1','arg.2',
+  'col.1','chi.1','per.1','uru.1','ecu.1','par.1',
+  'conmebol.libertadores','conmebol.sudamericana',
 
-  // Asia / other commonly available ESPN slugs
-  'ind.1', 'aus.1', 'jpn.1', 'kor.1',
-  'ksa.1',
+  // Asia / Oceania / Africa common slugs
+  'ind.1','aus.1','jpn.1','jpn.2','kor.1','chn.1','ksa.1','qat.1',
+  'idn.1','tha.1','mys.1',
+  'zaf.1','egy.1','mar.1'
 ];
 const BASE      = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const SITE_BASE = 'https://site.web.api.espn.com/apis/site/v2/sports/soccer';
