@@ -16,6 +16,8 @@
 
 'use strict';
 
+const { computeRealStatsSignals } = require('./signal-engine');
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function safeNum(v, fallback = null) {
@@ -113,7 +115,7 @@ function makeCanonical(raw, source) {
   const hasOdds = Object.values(odds).some(v => v !== null);
   const hasStats = Object.values(stats).some(v => v !== null);
 
-  return {
+  const canonical = {
     match_id:             safeStr(raw.match_id ?? raw.fixture_id ?? raw.id ?? ''),
     match_hometeam_name:  normTeamName(raw.match_hometeam_name ?? raw.home ?? raw.homeTeam ?? ''),
     match_awayteam_name:  normTeamName(raw.match_awayteam_name ?? raw.away ?? raw.awayTeam ?? ''),
@@ -130,6 +132,16 @@ function makeCanonical(raw, source) {
     stats,
     odds,
   };
+
+  canonical.derived = computeRealStatsSignals(canonical);
+  canonical.dataReliabilityScore = canonical.derived.dataReliabilityScore;
+  canonical.pressureScore = canonical.derived.pressureScore;
+  canonical.tempoScore = canonical.derived.tempoScore;
+  canonical.momentumScore = canonical.derived.momentumScore;
+  canonical.xgProxy = canonical.derived.xgProxy;
+  canonical.transitionReadiness = canonical.derived.transitionReadiness;
+
+  return canonical;
 }
 
 /**

@@ -1,4 +1,4 @@
-# CanliBet Scraper Service v10.94 — Canonical Stats Mapping Fix
+# CanliBet Scraper Service v10.95 — Canonical Stats Mapping Fix
 
 ESPN public JSON remains the primary live backbone. This release fixes the canonical stats mapping so useful ESPN summary fields are not lost.
 
@@ -52,3 +52,28 @@ PORT=10000
 ```
 
 No HTML scraping, no Playwright, no proxy, no CAPTCHA or fingerprint bypass.
+
+
+## v10.95 — Real Stats Signal Engine Activation
+
+Adds `signal-engine.js`, a bounded model-input layer that converts canonical real match stats into:
+
+- `pressureScore`
+- `tempoScore`
+- `momentumScore`
+- `dominanceScore`
+- `xgProxy`
+- `transitionReadiness`
+- `dataReliabilityScore`
+
+No betting decision is made in this backend layer. The fields are safe model inputs for the frontend signal engine.
+
+Required live data already confirmed from ESPN public JSON:
+
+- live score / minute / status
+- odds where available
+- shots_total
+- shots_on_target
+- corners
+- possession_home / possession_away
+- cards

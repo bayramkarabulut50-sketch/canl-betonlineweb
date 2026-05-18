@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.94-canonical-stats-mapping
+ * server.js — CanliBet Scraper Service v10.95-real-stats-signal-engine
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -174,7 +174,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.94-canonical-stats-mapping', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.95-real-stats-signal-engine', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -207,6 +207,10 @@ app.get('/live', async (req,res) => {
       sourcesTried:s.meta.sourcesTried, sourceSuccessCounts:s.meta.sourceSuccessCounts,
       liveMatches:s.meta.liveMatches, oddsMatchedCount:s.meta.oddsMatchedCount,
       statsCoverage:s.meta.statsCoverage,
+      derivedCoverage:s.matches.filter(m=>m.derived&&m.derived.isRealStatsDerived).length,
+      avgPressure:s.matches.length?Number((s.matches.reduce((a,m)=>a+(Number(m.pressureScore)||0),0)/s.matches.length).toFixed(1)):0,
+      avgTempo:s.matches.length?Number((s.matches.reduce((a,m)=>a+(Number(m.tempoScore)||0),0)/s.matches.length).toFixed(1)):0,
+      avgReadiness:s.matches.length?Number((s.matches.reduce((a,m)=>a+(Number(m.transitionReadiness)||0),0)/s.matches.length).toFixed(1)):0,
       statsProviderSelected:s.meta.statsProviderSelected,
       statsSourcesTried:s.meta.statsSourcesTried,
       statsSourceFailReasons:s.meta.statsSourceFailReasons,
@@ -257,7 +261,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v10.94-canonical-stats-mapping listening on :${PORT}`);
+  log(`CanliBet scraper service v10.95-real-stats-signal-engine listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
