@@ -79,6 +79,15 @@ async function runFetchCycle() {
 
   for (const adapter of LIVE_ADAPTERS) {
     const name = adapter.provider;
+
+    // v11.00: mock is only a development fallback. Do not call it when disabled.
+    if (name === 'mock' && DISABLE_MOCK_FALLBACK) {
+      log('[mock] skipped — DISABLE_MOCK_FALLBACK=true');
+      tried.push(name + ':skipped');
+      counts[name] = 0;
+      continue;
+    }
+
     const t1 = Date.now();
     let r;
     try { r = await adapter.fetch(null, { cache:_snapshot }); }
@@ -87,17 +96,14 @@ async function runFetchCycle() {
     log(`[${name}] done`, { ok:r.success, n:r.matches?.length??0, ms, err:r.error??null });
     results.push(r); tried.push(name); counts[name]=r.success?(r.matches?.length??0):0;
 
-    // Track success/fail globally
     _sourceSuccessCounts[name] = (_sourceSuccessCounts[name]||0) + (r.success ? 1 : 0);
     if (!r.success) _sourceFailReasons[name] = r.error || 'unknown';
 
-    // Stop at first success with real matches (mock = last resort)
     if (r.success && r.matches?.length > 0 && name !== 'mock') break;
   }
 
-  // If no real source succeeded, let mock fill
   const merged = mergeAdapterResults(results);
-  const live   = merged.filter(m => m.match_live === '1');
+  const live   = merged.filter(m => m.match_live === '1' && m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
     sourceSuccessCounts:counts, liveMatches:live.length,
@@ -109,11 +115,13 @@ async function runFetchCycle() {
     statsSourcesTried:[],
     statsSourceFailReasons:{},
     cacheHit:false, lastFetchAt:new Date(t0).toISOString(),
-    lastLiveSource: results.find(r=>r.success&&r.matches?.length>0)?.provider || null,
+    lastLiveSource: results.find(r=>r.success&&r.matches?.length>0&&r.provider!=='mock')?.provider || null,
+    mockSuppressed: DISABLE_MOCK_FALLBACK,
+    note: live.length ? 'real_live_matches_found' : 'no_real_live_matches_from_current_sources'
   };
 
   _snapshot = { matches:live, allMatches:merged, meta, fetchedAt:t0, expiresAt:t0+CACHE_TTL_MS };
-  log('Cycle done', { live:live.length, source:meta.lastLiveSource, ms:meta.durationMs });
+  log('Cycle done', { live:live.length, source:meta.lastLiveSource, mockSuppressed:DISABLE_MOCK_FALLBACK, ms:meta.durationMs });
   return _snapshot;
 }
 
@@ -132,7 +140,7 @@ async function runAudit() {
     const endpoints = adapter.ENDPOINTS || [];
     if (endpoints.length > 0) {
       // Probe primary endpoint
-      for (const ep of endpoints.slice(0,2)) {
+      for (const ep of endpoints) {
         try {
           const r = await adapter.probe(ep, { fetchStats:true, debug:true });
           sources.push(r);
@@ -265,7 +273,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v10.96-real-signal-generation listening on :${PORT}`);
+  log(`CanliBet scraper service v11.00-no-fake-mock-global-audit listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
