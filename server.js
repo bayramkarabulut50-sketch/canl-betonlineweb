@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.99-global-live-coverage
+ * server.js — CanliBet Scraper Service v11.01-live-status-final
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -21,6 +21,8 @@ const ENABLE_SOFASCORE  = process.env.ENABLE_SOFASCORE_SOURCE      === 'true';  
 const ENABLE_ESPN       = process.env.ENABLE_ESPN_JSON_SOURCE      !== 'false'; // default on
 const ENABLE_FOTMOB     = process.env.ENABLE_FOTMOB_JSON_SOURCE    !== 'false'; // default on
 const ENABLE_AISCORE    = process.env.ENABLE_AISCORE_JSON_SOURCE   !== 'false'; // default on
+// v11.01: production safety — never publish demo/mock matches unless explicitly disabled.
+const DISABLE_MOCK_FALLBACK = String(process.env.DISABLE_MOCK_FALLBACK || 'true').toLowerCase() === 'true';
 
 function log(msg, data) {
   const ts = new Date().toISOString();
@@ -184,7 +186,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.99-global-live-coverage', uptime:Math.round(process.uptime()),
+  status:'ok', version:'11.01-live-status-final', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -260,7 +262,7 @@ app.get('/stats-audit', async (req,res) => {
 
 app.get('/odds', async (_,res) => {
   try {
-    const s = await getSnapshot();
+    const s = await getSnapshot(String(req.query.force || '').toLowerCase() === 'true');
     const odds = s.matches.map(m=>({ match_id:m.match_id, match_hometeam_name:m.match_hometeam_name, match_awayteam_name:m.match_awayteam_name, odds:m.odds, hasOdds:m.hasOdds, source:m.source }));
     res.json({ success:true, count:odds.length, fetchedAt:s.fetchedAt, odds });
   } catch(err) { res.status(200).json({ success:false, count:0, odds:[], error:err.message }); }
@@ -273,7 +275,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.00-no-fake-mock-global-audit listening on :${PORT}`);
+  log(`CanliBet scraper service v11.01-live-status-final listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
