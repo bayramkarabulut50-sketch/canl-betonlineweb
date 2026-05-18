@@ -77,3 +77,17 @@ Required live data already confirmed from ESPN public JSON:
 - corners
 - possession_home / possession_away
 - cards
+
+
+## v10.96 — Real Signal Generation
+
+Adds watch-only real-stat signals on top of ESPN live data:
+
+- `signals[]`
+- `topSignal`
+- `signalCount`
+- `actionabilityScore`
+- `signalMode`
+- debug: `signalCoverage`, `actionableSignals`, `topSignals`
+
+Signals are generated from real canonical stats and remain signal-only. No stake calculation, no bet placement.

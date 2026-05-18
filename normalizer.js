@@ -16,7 +16,7 @@
 
 'use strict';
 
-const { computeRealStatsSignals } = require('./signal-engine');
+const { computeRealStatsSignals, generateRealSignals } = require('./signal-engine');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -134,6 +134,14 @@ function makeCanonical(raw, source) {
   };
 
   canonical.derived = computeRealStatsSignals(canonical);
+  const signalPack = generateRealSignals(canonical);
+  canonical.signals = signalPack.signals;
+  canonical.topSignal = signalPack.topSignal;
+  canonical.signalCount = signalPack.signalCount;
+  canonical.actionabilityScore = signalPack.actionabilityScore;
+  canonical.signalMode = signalPack.signalMode;
+  canonical.signalBlockReasons = signalPack.signalBlockReasons;
+
   canonical.dataReliabilityScore = canonical.derived.dataReliabilityScore;
   canonical.pressureScore = canonical.derived.pressureScore;
   canonical.tempoScore = canonical.derived.tempoScore;

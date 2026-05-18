@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.95-real-stats-signal-engine
+ * server.js — CanliBet Scraper Service v10.96-real-signal-generation
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -103,6 +103,8 @@ async function runFetchCycle() {
     sourceSuccessCounts:counts, liveMatches:live.length,
     oddsMatchedCount:live.filter(m=>m.hasOdds).length,
     statsCoverage:live.filter(m=>m.hasStats).length,
+    signalCoverage:live.filter(m=>m.signalCount > 0).length,
+    actionableSignals:live.reduce((a,m)=>a+(m.signalCount||0),0),
     statsProviderSelected:null,
     statsSourcesTried:[],
     statsSourceFailReasons:{},
@@ -207,6 +209,8 @@ app.get('/live', async (req,res) => {
       sourcesTried:s.meta.sourcesTried, sourceSuccessCounts:s.meta.sourceSuccessCounts,
       liveMatches:s.meta.liveMatches, oddsMatchedCount:s.meta.oddsMatchedCount,
       statsCoverage:s.meta.statsCoverage,
+      signalCoverage:s.meta.signalCoverage, actionableSignals:s.meta.actionableSignals,
+      topSignals:s.matches.map(m=>m.topSignal).filter(Boolean).slice(0,5),
       derivedCoverage:s.matches.filter(m=>m.derived&&m.derived.isRealStatsDerived).length,
       avgPressure:s.matches.length?Number((s.matches.reduce((a,m)=>a+(Number(m.pressureScore)||0),0)/s.matches.length).toFixed(1)):0,
       avgTempo:s.matches.length?Number((s.matches.reduce((a,m)=>a+(Number(m.tempoScore)||0),0)/s.matches.length).toFixed(1)):0,
@@ -261,7 +265,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v10.95-real-stats-signal-engine listening on :${PORT}`);
+  log(`CanliBet scraper service v10.96-real-signal-generation listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 

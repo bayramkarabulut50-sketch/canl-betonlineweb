@@ -1,9 +1,8 @@
 /**
- * signal-engine.js — v10.95 Real Stats Signal Engine Activation
+ * signal-engine.js — v10.96 Real Signal Generation
  *
- * Turns canonical live stats into stable, bounded model inputs.
- * No betting decision is made here. This only enriches matches with
- * pressure/tempo/momentum/xG proxy/data quality signals for the frontend engine.
+ * Turns canonical live stats into stable, bounded model inputs and watch-only
+ * live football signals. This module does not place bets and does not calculate stake.
  */
 'use strict';
 
@@ -126,7 +125,7 @@ function computeRealStatsSignals(match) {
   const qualityBucket = reliability.score >= 80 ? 'strong' : reliability.score >= 60 ? 'usable' : reliability.score >= 40 ? 'thin' : 'weak';
 
   return {
-    version: '10.95-real-stats-signal-engine',
+    version: '10.96-real-signal-generation',
     isRealStatsDerived: !!match?.hasStats,
     dataReliabilityScore: round(reliability.score, 1),
     dataReliabilityBucket: qualityBucket,
@@ -145,4 +144,124 @@ function computeRealStatsSignals(match) {
   };
 }
 
-module.exports = { computeRealStatsSignals };
+function signal(id, market, label, confidence, reasons, extra = {}) {
+  return {
+    id,
+    market,
+    label,
+    confidence: round(clamp(confidence, 0, 100), 1),
+    action: extra.action || 'WATCH',
+    severity: extra.severity || (confidence >= 82 ? 'high' : confidence >= 68 ? 'medium' : 'low'),
+    reasons,
+    ...extra,
+  };
+}
+
+function generateRealSignals(match) {
+  const d = match.derived || computeRealStatsSignals(match);
+  const stats = match.stats || {};
+  const minute = clamp(num(match.minute, 0), 0, 130);
+  const homeGoals = num(match.match_hometeam_score, 0);
+  const awayGoals = num(match.match_awayteam_score, 0);
+  const totalGoals = homeGoals + awayGoals;
+  const scoreDiff = Math.abs(homeGoals - awayGoals);
+  const signals = [];
+
+  const pressure = num(d.pressureScore, 0);
+  const tempo = num(d.tempoScore, 0);
+  const readiness = num(d.transitionReadiness, 0);
+  const xgProxy = num(d.xgProxy, 0);
+  const sotPer90 = num(d.shotsOnTargetPer90, 0);
+  const cornersPer90 = num(d.cornersPer90, 0);
+  const reliability = num(d.dataReliabilityScore, 0);
+
+  const hasGoodData = match.hasStats && reliability >= 70;
+  if (!hasGoodData) {
+    return {
+      signals: [],
+      topSignal: null,
+      signalCount: 0,
+      actionabilityScore: 0,
+      signalMode: 'NO_REAL_STATS_SIGNAL',
+      signalBlockReasons: d.missingInputs || [],
+    };
+  }
+
+  // Goal-pressure signal: high real pressure + tempo; strongest between 25' and 85'.
+  if (minute >= 20 && minute <= 88 && pressure >= 72 && tempo >= 68 && xgProxy >= 1.05) {
+    const conf = readiness * 0.48 + pressure * 0.27 + tempo * 0.15 + Math.min(100, xgProxy * 26) * 0.10;
+    signals.push(signal('GOAL_PRESSURE_SIGNAL', 'goals', 'Goal pressure building', conf, [
+      `pressure=${round(pressure,1)}`,
+      `tempo=${round(tempo,1)}`,
+      `xgProxy=${round(xgProxy,2)}`,
+      `SOT/90=${round(sotPer90,2)}`,
+    ], { scenario: 'goal_pressure', recommendedPanel: conf >= 78 ? 'ACTIONABLE_WATCH' : 'WATCH' }));
+  }
+
+  // Late goal watch: late minutes + strong pressure, useful for over/next goal monitoring.
+  if (minute >= 60 && minute <= 88 && pressure >= 70 && (tempo >= 65 || sotPer90 >= 4.2)) {
+    const conf = pressure * 0.42 + tempo * 0.24 + sotPer90 * 3.2 + Math.min(12, cornersPer90);
+    signals.push(signal('LATE_GOAL_ALERT', 'goals', 'Late goal alert', conf, [
+      `minute=${minute}`,
+      `pressure=${round(pressure,1)}`,
+      `SOT/90=${round(sotPer90,2)}`,
+      `corners/90=${round(cornersPer90,2)}`,
+    ], { scenario: 'late_goal', recommendedPanel: 'WATCH' }));
+  }
+
+  // Over 1.5 / Over 2.5 style watch signals. These remain signal-only; odds edge is not computed here.
+  if (minute >= 35 && minute <= 80 && totalGoals < 2 && readiness >= 68 && xgProxy >= 1.15) {
+    const conf = readiness * 0.52 + pressure * 0.22 + tempo * 0.16 + Math.min(100, xgProxy * 25) * 0.10;
+    signals.push(signal('OVER_15_WATCH', 'goals', 'Over 1.5 watch', conf, [
+      `goals=${totalGoals}`,
+      `readiness=${round(readiness,1)}`,
+      `xgProxy=${round(xgProxy,2)}`,
+    ], { line: 'over_15', scenario: 'over15_watch', recommendedPanel: 'WATCH' }));
+  }
+
+  if (minute >= 55 && minute <= 84 && totalGoals < 3 && readiness >= 75 && xgProxy >= 1.65) {
+    const conf = readiness * 0.50 + pressure * 0.24 + tempo * 0.16 + Math.min(100, xgProxy * 22) * 0.10;
+    signals.push(signal('OVER_25_WATCH', 'goals', 'Over 2.5 watch', conf, [
+      `goals=${totalGoals}`,
+      `readiness=${round(readiness,1)}`,
+      `xgProxy=${round(xgProxy,2)}`,
+    ], { line: 'over_25', scenario: 'over25_watch', recommendedPanel: 'WATCH' }));
+  }
+
+  // Result pressure is intentionally conservative; only close-score live matches.
+  if (minute >= 55 && scoreDiff <= 1 && Math.abs(num(d.dominanceScore, 0)) >= 28 && pressure >= 65) {
+    const side = num(d.dominanceScore, 0) >= 0 ? 'home' : 'away';
+    const conf = clamp(Math.abs(num(d.dominanceScore, 0)) * 0.65 + pressure * 0.25 + readiness * 0.10, 0, 86);
+    signals.push(signal('RESULT_PRESSURE_WATCH', 'result', 'Result pressure watch', conf, [
+      `dominance=${round(d.dominanceScore,1)}`,
+      `scoreDiff=${scoreDiff}`,
+      `pressure=${round(pressure,1)}`,
+    ], { side, scenario: 'result_pressure', recommendedPanel: 'WATCH_ONLY' }));
+  }
+
+  // BTTS watch: both teams have scored? Then not useful. Otherwise, high tempo + close score.
+  if (minute >= 35 && minute <= 80 && (homeGoals === 0 || awayGoals === 0) && scoreDiff <= 1 && tempo >= 72 && pressure >= 70) {
+    const conf = tempo * 0.35 + pressure * 0.30 + readiness * 0.20 + Math.min(100, xgProxy * 22) * 0.15;
+    signals.push(signal('BTTS_WATCH', 'goals', 'BTTS watch', conf, [
+      `score=${homeGoals}-${awayGoals}`,
+      `tempo=${round(tempo,1)}`,
+      `pressure=${round(pressure,1)}`,
+    ], { line: 'btts_yes', scenario: 'btts_watch', recommendedPanel: 'WATCH' }));
+  }
+
+  // Sort by confidence and keep compact output.
+  signals.sort((a, b) => b.confidence - a.confidence);
+  const top = signals[0] || null;
+  const actionabilityScore = top ? clamp(top.confidence * 0.72 + readiness * 0.18 + reliability * 0.10, 0, 100) : 0;
+
+  return {
+    signals: signals.slice(0, 5),
+    topSignal: top,
+    signalCount: signals.length,
+    actionabilityScore: round(actionabilityScore, 1),
+    signalMode: signals.length ? 'REAL_STATS_SIGNAL' : 'REAL_STATS_NO_TRIGGER',
+    signalBlockReasons: signals.length ? [] : ['thresholds_not_met'],
+  };
+}
+
+module.exports = { computeRealStatsSignals, generateRealSignals };
