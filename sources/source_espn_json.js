@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v10.92-force-espn-detail-fetch
+ * source_espn_json.js v10.94-canonical-stats-mapping
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -236,19 +236,23 @@ function extractEspnStats(summaryData) {
   const result = {
     attacks:           sum(pick('attacks','total_attacks')),
     dangerous_attacks: sum(pick('dangerous_attacks')),
-    shots_total:       sum(pick('shots','total_shots','shot','shots_total','total_shots_on_goal')),
-    shots_on_target:   sum(pick('shots_on_target','on_target','on_goal','shots_on_goal','shots_on_target_total')),
-    corners:           sum(pick('corner_kicks','corners','corner')),
-    possession_home:   home(pick('possession','ball_possession','possession_pct','possession_percentage')),
-    possession_away:   away(pick('possession','ball_possession','possession_pct','possession_percentage')),
-    yellow_cards:      sum(pick('yellow_cards','yellows')),
-    red_cards:         sum(pick('red_cards','reds')),
+    // ESPN soccer summary commonly returns keys like:
+    // won_corners, total_shots, shots_on_target, possession_pct, yellow_cards, red_cards.
+    // Keep many aliases so canonical output does not silently lose useful stats.
+    shots_total:       sum(pick('shots','total_shots','shot','shots_total','total_shots_on_goal','total_shots_attempted','shot_attempts')),
+    shots_on_target:   sum(pick('shots_on_target','on_target','on_goal','shots_on_goal','shots_on_target_total','shots_on_target_total','shots_on_target_pct')),
+    corners:           sum(pick('won_corners','corner_kicks','cornerkicks','corners','corner','corners_won','corner_kicks_won','total_corners')),
+    possession_home:   home(pick('possession','ball_possession','possession_pct','possession_percentage','possession_percent')),
+    possession_away:   away(pick('possession','ball_possession','possession_pct','possession_percentage','possession_percent')),
+    yellow_cards:      sum(pick('yellow_cards','yellowcards','yellows')),
+    red_cards:         sum(pick('red_cards','redcards','reds')),
   };
 
-  const discoveredKeys = Object.keys(map).slice(0, 40);
-  const hasAny = Object.values(result).some(v => v !== null);
+  const discoveredKeys = Object.keys(map).slice(0, 60);
+  const mappedStatsKeys = Object.keys(result).filter(k => result[k] !== null);
+  const hasAny = mappedStatsKeys.length > 0;
 
-  return { stats: result, hasAny, discoveredKeys, oddsFound, odds };
+  return { stats: result, hasAny, discoveredKeys, mappedStatsKeys, oddsFound, odds };
 }
 
 // ── Fetch per-event stats from ESPN summary endpoint ──────────────────────────
@@ -274,6 +278,7 @@ async function fetchEventDetails(leagueSlug, eventId) {
     const extracted = extractEspnStats(data);
     if (extracted) {
       debug.discoveredKeys  = extracted.discoveredKeys;
+      debug.mappedStatsKeys = extracted.mappedStatsKeys || [];
       debug.hasStatistics   = extracted.hasAny;
       debug.hasOdds         = extracted.oddsFound;
       return { ok:true, stats:extracted.stats, odds:extracted.odds, debug };

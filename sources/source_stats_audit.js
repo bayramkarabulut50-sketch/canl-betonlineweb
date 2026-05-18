@@ -1,5 +1,5 @@
 /**
- * source_stats_audit.js — CanliBet v10.93 stats-source-audit
+ * source_stats_audit.js — CanliBet v10.94 stats-source-audit
  *
  * Public JSON endpoint probes only.
  * No HTML scraping. No browser automation. No proxy. No CAPTCHA/fingerprint bypass.
