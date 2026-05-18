@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v10.89-espn-stats-discovery
+ * source_espn_json.js v10.92-force-espn-detail-fetch
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -16,17 +16,23 @@ const LEAGUE_SLUGS = [
 ];
 const BASE      = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const SITE_BASE = 'https://site.web.api.espn.com/apis/site/v2/sports/soccer';
+const WEB_BASE  = 'https://site.web.api.espn.com/apis/v2/sports/soccer';
+const FORCE_ESPN_DETAILS = process.env.FORCE_ESPN_DETAILS !== 'false';
 const ALL_ENDPOINTS    = LEAGUE_SLUGS.map(s => `${BASE}/${s}/scoreboard`);
 const PRIMARY_ENDPOINTS = LEAGUE_SLUGS.slice(0, 5).map(s => `${BASE}/${s}/scoreboard`);
 
 // Per-event detail endpoint patterns
-const DETAIL_PATHS = ['summary', 'statistics', 'situation', 'odds'];
-function detailUrl(slug, eventId, path) {
-  return `${SITE_BASE}/${slug}/summary?event=${eventId}&lang=en&region=us`;
-}
-// ESPN also exposes summary at a cleaner path:
-function summaryUrl(slug, eventId) {
-  return `${BASE}/${slug}/summary?event=${eventId}`;
+const DETAIL_PATHS = ['summary'];
+function summaryUrlCandidates(slug, eventId) {
+  const cleanSlug = slug || 'all';
+  const slugs = [...new Set([cleanSlug, 'all', 'usa.1', 'eng.1'].filter(Boolean))];
+  const urls = [];
+  for (const s of slugs) {
+    urls.push(`${BASE}/${s}/summary?event=${eventId}`);
+    urls.push(`${SITE_BASE}/${s}/summary?event=${eventId}&lang=en&region=us`);
+    urls.push(`${WEB_BASE}/${s}/summary?event=${eventId}&lang=en&region=us`);
+  }
+  return [...new Set(urls)];
 }
 
 const FAIL = {
@@ -145,68 +151,101 @@ function normEspnEvent(ev, acceptScheduled = false) {
 }
 
 // ── Stats extraction from ESPN summary JSON ───────────────────────────────────
+function parseStatVal(v) {
+  if (v == null || v === '' || v === '-') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const raw = String(v).trim();
+  // Handles "53%", "7", "7.0", "7-3" (uses first number)
+  const m = raw.match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeStatName(rawName) {
+  return safeStr(rawName)
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function pushTeamStatsIntoMap(map, teams) {
+  if (!Array.isArray(teams)) return;
+  for (let ti = 0; ti < Math.min(teams.length, 2); ti++) {
+    const teamNode = teams[ti] || {};
+    const side = (teamNode.homeAway === 'away' || teamNode.team?.homeAway === 'away' || ti === 1) ? 'away' : 'home';
+    const stats = teamNode.statistics || teamNode.stats || teamNode.teamStats || [];
+    if (!Array.isArray(stats)) continue;
+    for (const st of stats) {
+      const name = normalizeStatName(st.name || st.label || st.displayName || st.shortDisplayName || st.abbreviation);
+      if (!name) continue;
+      const val = parseStatVal(st.displayValue ?? st.value ?? st.displayValueShort ?? st.summary);
+      if (!map[name]) map[name] = { home:null, away:null };
+      map[name][side] = val;
+    }
+  }
+}
+
+// ── Stats extraction from ESPN summary JSON ───────────────────────────────────
 function extractEspnStats(summaryData) {
   if (!summaryData) return null;
 
-  // ESPN summary → statistics array: [ { name, teams:[ {team,stats:[{name,displayValue}]} ] } ]
-  const statGroups = summaryData.statistics || summaryData.stats || [];
-  if (!Array.isArray(statGroups) || statGroups.length === 0) return null;
-
-  // Build flat map: statName → { home, away }
   const map = {};
-  for (const group of statGroups) {
-    const teams = group.teams || group.team || [];
-    for (let ti = 0; ti < Math.min(teams.length, 2); ti++) {
-      const side  = ti === 0 ? 'home' : 'away';
-      const stats = teams[ti].statistics || teams[ti].stats || [];
-      for (const s of stats) {
-        // camelCase → snake_case first, then lowercase (handles 'cornerKicks' → 'corner_kicks')
-        const rawName = s.name || s.label || '';
-        const name = rawName
-          .replace(/([a-z])([A-Z])/g, '$1_$2')   // camelCase split
-          .toLowerCase()
-          .replace(/[^a-z0-9_]/g, '_')
-          .replace(/_+/g, '_');
-        const val  = safeNum(s.displayValue != null ? s.displayValue : s.value);
-        if (!map[name]) map[name] = { home: null, away: null };
-        map[name][side] = val;
-      }
+
+  // Shape 1: summary.statistics[*].teams[*].statistics[*]
+  const statGroups = summaryData.statistics || summaryData.stats || [];
+  if (Array.isArray(statGroups)) {
+    for (const group of statGroups) {
+      pushTeamStatsIntoMap(map, group.teams || group.team || group.competitors || []);
     }
   }
 
-  // Odds from summary
+  // Shape 2: summary.boxscore.teams[*].statistics[*]
+  if (summaryData.boxscore) {
+    pushTeamStatsIntoMap(map, summaryData.boxscore.teams || summaryData.boxscore.competitors || []);
+  }
+
+  // Shape 3: summary.header.competitions[0].competitors[*].statistics[*]
+  const headerComp = summaryData.header?.competitions?.[0];
+  if (headerComp) {
+    pushTeamStatsIntoMap(map, headerComp.competitors || []);
+  }
+
+  // Odds from summary / pickcenter / competitions
   let oddsFound = false;
   let odds = {};
-  const summaryOdds = summaryData.odds || summaryData.pickcenter || [];
+  const summaryOdds = summaryData.odds || summaryData.pickcenter || summaryData.header?.competitions?.[0]?.odds || [];
   if (Array.isArray(summaryOdds) && summaryOdds.length > 0) {
-    const o = summaryOdds[0];
+    const o = summaryOdds[0] || {};
     odds = {
-      home: safeNum(o.homeTeamOdds && (o.homeTeamOdds.moneyLine || o.homeTeamOdds.value)),
-      away: safeNum(o.awayTeamOdds && (o.awayTeamOdds.moneyLine || o.awayTeamOdds.value)),
-      draw: safeNum(o.drawOdds && o.drawOdds.moneyLine),
+      home: safeNum(o.homeTeamOdds && (o.homeTeamOdds.moneyLine || o.homeTeamOdds.value || o.homeTeamOdds.odds)),
+      away: safeNum(o.awayTeamOdds && (o.awayTeamOdds.moneyLine || o.awayTeamOdds.value || o.awayTeamOdds.odds)),
+      draw: safeNum(o.drawOdds && (o.drawOdds.moneyLine || o.drawOdds.value || o.drawOdds.odds)),
       over_25: safeNum(o.overUnder),
     };
     oddsFound = Object.values(odds).some(v => v !== null);
   }
 
   const pick = (...keys) => { for (const k of keys) if (map[k]) return map[k]; return null; };
-  const sum  = s => s ? (s.home||0)+(s.away||0) : null;
+  const sum  = s => s ? ((s.home ?? 0) + (s.away ?? 0)) : null;
   const home = s => s ? s.home : null;
   const away = s => s ? s.away : null;
 
   const result = {
     attacks:           sum(pick('attacks','total_attacks')),
     dangerous_attacks: sum(pick('dangerous_attacks')),
-    shots_total:       sum(pick('shots','total_shots','shot','shots_total')),
-    shots_on_target:   sum(pick('shots_on_target','on_target','on_goal','shots_on_goal')),
-    corners:           sum(pick('corner_kicks','corners','corner')),   // ESPN camelCase → corner_kicks
-    possession_home:   home(pick('possession','ball_possession')),
-    possession_away:   away(pick('possession','ball_possession')),
-    yellow_cards:      sum(pick('yellow_cards','yellows')),            // ESPN: yellowCards → yellow_cards
+    shots_total:       sum(pick('shots','total_shots','shot','shots_total','total_shots_on_goal')),
+    shots_on_target:   sum(pick('shots_on_target','on_target','on_goal','shots_on_goal','shots_on_target_total')),
+    corners:           sum(pick('corner_kicks','corners','corner')),
+    possession_home:   home(pick('possession','ball_possession','possession_pct','possession_percentage')),
+    possession_away:   away(pick('possession','ball_possession','possession_pct','possession_percentage')),
+    yellow_cards:      sum(pick('yellow_cards','yellows')),
     red_cards:         sum(pick('red_cards','reds')),
   };
 
-  const discoveredKeys = Object.keys(map).slice(0, 20);
+  const discoveredKeys = Object.keys(map).slice(0, 40);
   const hasAny = Object.values(result).some(v => v !== null);
 
   return { stats: result, hasAny, discoveredKeys, oddsFound, odds };
@@ -214,11 +253,8 @@ function extractEspnStats(summaryData) {
 
 // ── Fetch per-event stats from ESPN summary endpoint ──────────────────────────
 async function fetchEventDetails(leagueSlug, eventId) {
-  const urls = [
-    summaryUrl(leagueSlug, eventId),
-    detailUrl(leagueSlug, eventId),
-  ];
-  const debug = { testedEndpoints:[], successfulEndpoints:[], discoveredKeys:[], hasStatistics:false, hasOdds:false };
+  const urls = summaryUrlCandidates(leagueSlug, eventId);
+  const debug = { testedEndpoints:[], successfulEndpoints:[], discoveredKeys:[], hasStatistics:false, hasOdds:false, failReason:null };
 
   for (const url of urls) {
     debug.testedEndpoints.push(url);
@@ -231,7 +267,7 @@ async function fetchEventDetails(leagueSlug, eventId) {
     }
 
     let data;
-    try { data = JSON.parse(res.text); } catch(e) { continue; }
+    try { data = JSON.parse(res.text); } catch(e) { debug.failReason='DETAIL_PARSE_FAILED'; continue; }
 
     debug.successfulEndpoints.push(url);
     console.log(`[espn-details] stats keys=${Object.keys(data||{}).join(',').slice(0,100)}`);
@@ -248,12 +284,13 @@ async function fetchEventDetails(leagueSlug, eventId) {
     return { ok:true, stats:null, odds:null, debug };
   }
 
+  debug.failReason = debug.failReason || 'DETAIL_FETCH_FAILED';
   return { ok:false, stats:null, odds:null, debug };
 }
 
 // ── Probe a single scoreboard endpoint ───────────────────────────────────────
 async function probe(endpoint, opts = {}) {
-  const { acceptScheduled=false, debug=true, fetchStats=false } = opts;
+  const { acceptScheduled=false, debug=true, fetchStats=FORCE_ESPN_DETAILS } = opts;
   const slug = endpoint.split('/soccer/')[1]?.split('/')[0] || 'all';
   const t0   = Date.now();
   const res  = await client.get(endpoint);
@@ -330,7 +367,7 @@ async function probe(endpoint, opts = {}) {
   const liveOnly=raw.filter(m=>m.match_live==='1');
 
   // ── Stats discovery for live matches ─────────────────────────────────────
-  console.log(`[espn-details] pipeline check: fetchStats=${fetchStats} liveCount=${liveOnly.length} slug=${slug}`);
+  console.log(`[espn-details] pipeline check: fetchStats=${fetchStats} force=${FORCE_ESPN_DETAILS} liveCount=${liveOnly.length} slug=${slug}`);
   if (!fetchStats) {
     console.log('[espn-details] DETAIL_FETCH_SKIPPED — fetchStats=false (check probe() call opts)');
   } else if (liveOnly.length === 0) {
