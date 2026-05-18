@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.03-source-coverage-audit
+ * source_espn_json.js v11.04-no-key-coverage-tier
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -160,6 +160,38 @@ function isEspnFinalStatus(statusType = {}) {
 }
 
 // ── Event normalizer (scoreboard payload) ─────────────────────────────────────
+
+function applyLiveQualityTier(match) {
+  const hasBasic = !!(match && match.match_id && match.match_hometeam_name && match.match_awayteam_name && match.match_live === '1');
+  const hasStats = !!(match && match.hasStats);
+  const hasOdds  = !!(match && match.hasOdds);
+
+  if (!hasBasic) {
+    match.liveQualityTier = 'REJECTED_INCOMPLETE';
+    match.liveMode = 'REJECTED';
+    return match;
+  }
+
+  if (hasStats && hasOdds) {
+    match.liveQualityTier = 'FULL_STATS_SIGNAL';
+    match.liveMode = 'FULL_SIGNAL';
+  } else if (hasStats) {
+    match.liveQualityTier = 'STATS_ONLY_SIGNAL';
+    match.liveMode = 'STATS_SIGNAL';
+  } else if (hasOdds) {
+    match.liveQualityTier = 'ODDS_ONLY_WATCH';
+    match.liveMode = 'WATCH_ONLY';
+  } else {
+    match.liveQualityTier = 'BASIC_LIVE_ONLY';
+    match.liveMode = 'WATCH_ONLY';
+  }
+
+  match.coverageNotes = match.coverageNotes || [];
+  if (!hasStats) match.coverageNotes.push('no_stats_available_from_source');
+  if (!hasOdds)  match.coverageNotes.push('no_odds_available_from_source');
+  return match;
+}
+
 function normEspnEvent(ev, acceptScheduled = false) {
   if (!ev) return null;
   const comp     = (ev.competitions || [])[0] || {};
