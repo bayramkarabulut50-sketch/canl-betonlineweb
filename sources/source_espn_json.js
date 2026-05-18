@@ -11,35 +11,37 @@ const { createHttpClient } = require('../http-client');
 const { safeNum, safeStr, normalizeMatches } = require('../normalizer');
 
 const LEAGUE_SLUGS = [
-  // Broad ESPN public soccer JSON coverage. Invalid slugs fail gracefully.
+  // ESPN public JSON coverage — no API key, no HTML scraping.
+  // Invalid/empty slugs fail gracefully and are visible in /audit.
   'all',
 
-  // Europe
+  // England
   'eng.1','eng.2','eng.3','eng.4','eng.5',
+  // Spain
   'esp.1','esp.2',
+  // Germany
   'ger.1','ger.2',
+  // Italy
   'ita.1','ita.2',
-  'fra.1','fra.2',
-  'ned.1','por.1','bel.1','sco.1','tur.1',
-  'gre.1','den.1','nor.1','swe.1','fin.1','pol.1','aut.1','sui.1',
-  'cze.1','cro.1','ser.1','rom.1','bul.1','ukr.1','rus.1',
+  // France / Netherlands / Portugal / Belgium / Scotland / Turkey
+  'fra.1','fra.2','ned.1','por.1','bel.1','sco.1','tur.1',
+  // Nordics / Central-East Europe
+  'swe.1','nor.1','den.1','fin.1','pol.1','aut.1','sui.1',
+  'cze.1','cro.1','ser.1','rom.1','bul.1','ukr.1','gre.1',
 
   // UEFA / international
   'uefa.champions','uefa.europa','uefa.europa.conf','uefa.nations',
   'fifa.world','fifa.friendly','fifa.worldq','uefa.euro',
 
-  // Americas
-  'usa.1','usa.nwsl','usa.usl.1','usa.open',
-  'mex.1','mex.2',
-  'bra.1','bra.2',
-  'arg.1','arg.2',
-  'col.1','chi.1','per.1','uru.1','ecu.1','par.1',
+  // North America
+  'usa.1','usa.nwsl','usa.usl.1','usa.open','mex.1','mex.2',
+  // South America
+  'bra.1','bra.2','arg.1','arg.2','col.1','chi.1','per.1','uru.1','ecu.1','par.1',
   'conmebol.libertadores','conmebol.sudamericana',
 
   // Asia / Oceania / Africa common slugs
   'ind.1','aus.1','jpn.1','jpn.2','kor.1','chn.1','ksa.1','qat.1',
-  'idn.1','tha.1','mys.1',
-  'zaf.1','egy.1','mar.1'
+  'idn.1','tha.1','mys.1','zaf.1','egy.1','mar.1'
 ];
 const BASE      = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const SITE_BASE = 'https://site.web.api.espn.com/apis/site/v2/sports/soccer';
@@ -374,44 +376,100 @@ function extractEspnStats(summaryData) {
 }
 
 // ── Fetch per-event stats from ESPN summary endpoint ──────────────────────────
-async function fetchEventDetails(leagueSlug, eventId) {
-  const urls = summaryUrlCandidates(leagueSlug, eventId);
-  const debug = { testedEndpoints:[], successfulEndpoints:[], discoveredKeys:[], hasStatistics:false, hasOdds:false, failReason:null };
+async function fetch(_browser, _options) {
+  const fetchedAt = Date.now();
+  const audits = [];
+  let allMatches = [];
+  let okEndpoints = 0;
+  let failedEndpoints = 0;
 
-  for (const url of urls) {
-    debug.testedEndpoints.push(url);
-    console.log(`[espn-details] fetching summary url ${url}`);
-    const res = await client.get(url);
-    console.log(`[espn-details] summary status=${res.status} ok=${res.ok} ct=${(res.contentType||'').slice(0,30)}`);
-    if (!res.ok || !res.contentType.includes('json')) {
-      console.log(`[espn-details] DETAIL_PARSE_FAILED — bad response status=${res.status} ct=${res.contentType||''}`);
-      continue;
-    }
+  for (const ep of PRIMARY_ENDPOINTS) {
+    const r = await probe(ep, { fetchStats:true, acceptScheduled:false });
+    audits.push({
+      endpoint:r.endpoint,
+      slug:r.slug,
+      status:r.status,
+      rawEventCount:r.rawEventCount || 0,
+      parsedMatches:r.parsedMatches || 0,
+      acceptedEventCount:r.acceptedEventCount || 0,
+      failReason:r.failReason,
+      discoveredStatusTypes:r.discoveredStatusTypes || [],
+      rejectedReasons:r.rejectedReasons || []
+    });
 
-    let data;
-    try { data = JSON.parse(res.text); } catch(e) { debug.failReason='DETAIL_PARSE_FAILED'; continue; }
+    if (r.status === 200) okEndpoints++; else failedEndpoints++;
+    if (r.parsedMatches > 0) allMatches.push(...r.matches);
 
-    debug.successfulEndpoints.push(url);
-    console.log(`[espn-details] stats keys=${Object.keys(data||{}).join(',').slice(0,100)}`);
-    const extracted = extractEspnStats(data);
-    if (extracted) {
-      debug.discoveredKeys  = extracted.discoveredKeys;
-      debug.mappedStatsKeys = extracted.mappedStatsKeys || [];
-      debug.hasStatistics   = extracted.hasAny;
-      debug.hasOdds         = extracted.oddsFound;
-      return { ok:true, stats:extracted.stats, odds:extracted.odds, debug };
-    }
-    // Even if no stats, log what top-level keys came back
-    debug.discoveredKeys = Object.keys(data||{}).slice(0,15);
-    console.log(`[espn-stats] ${url.split('?')[0]} → keys=${debug.discoveredKeys.join(',')}`);
-    return { ok:true, stats:null, odds:null, debug };
+    console.log(`[espn-global] ${r.slug || ep} → status=${r.status} raw=${r.rawEventCount||0} parsed=${r.parsedMatches||0} reason=${r.failReason}`);
   }
 
-  debug.failReason = debug.failReason || 'DETAIL_FETCH_FAILED';
-  return { ok:false, stats:null, odds:null, debug };
+  const deduped = dedupeMatches(allMatches);
+  const qualityTiers = deduped.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{});
+  const auditSummary = {
+    endpointsTried: PRIMARY_ENDPOINTS.length,
+    endpoints200: okEndpoints,
+    endpointsFailed: failedEndpoints,
+    rawEventsTotal: audits.reduce((a,x)=>a+(x.rawEventCount||0),0),
+    parsedBeforeDedupe: allMatches.length,
+    parsedAfterDedupe: deduped.length,
+    qualityTiers,
+    topEndpoints: audits.filter(x=>x.parsedMatches>0).sort((a,b)=>b.parsedMatches-a.parsedMatches).slice(0,10),
+    sampledFailures: audits.filter(x=>!x.parsedMatches).slice(0,12)
+  };
+
+  if (deduped.length > 0) {
+    return {
+      provider,
+      success:true,
+      matches:deduped,
+      error:null,
+      fetchedAt,
+      _globalAudit:auditSummary,
+      _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:deduped.length, matches:deduped, failReason:'OK_PARSED', auditSummary }
+    };
+  }
+
+  return {
+    provider,
+    success:false,
+    matches:[],
+    error:'NO_LIVE_MATCHES_FROM_ESPN_GLOBAL_SCAN',
+    fetchedAt,
+    _globalAudit:auditSummary,
+    _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:0, matches:[], failReason:'NO_EVENTS_FOUND', auditSummary }
+  };
 }
 
 // ── Probe a single scoreboard endpoint ───────────────────────────────────────
+
+function canonicalMatchKey(m) {
+  const h = String(m.match_hometeam_name || '').toLowerCase().replace(/[^a-z0-9]+/g,'');
+  const a = String(m.match_awayteam_name || '').toLowerCase().replace(/[^a-z0-9]+/g,'');
+  const id = String(m.match_id || '');
+  return id ? `id:${id}` : `${h}__${a}`;
+}
+
+function matchQualityScore(m) {
+  let s = 0;
+  if (m.hasStats) s += 40;
+  if (m.hasOdds) s += 25;
+  if (m.minute != null) s += 10;
+  if (m.signalCount > 0) s += 15;
+  if (m.liveQualityTier === 'FULL_STATS_SIGNAL') s += 20;
+  if (m.liveQualityTier === 'STATS_ONLY_SIGNAL') s += 10;
+  return s;
+}
+
+function dedupeMatches(matches) {
+  const map = new Map();
+  for (const m of (matches || [])) {
+    const key = canonicalMatchKey(m);
+    const old = map.get(key);
+    if (!old || matchQualityScore(m) > matchQualityScore(old)) map.set(key, m);
+  }
+  return Array.from(map.values());
+}
+
 async function probe(endpoint, opts = {}) {
   const { acceptScheduled=false, debug=true, fetchStats=FORCE_ESPN_DETAILS } = opts;
   const slug = endpoint.split('/soccer/')[1]?.split('/')[0] || 'all';
