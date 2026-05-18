@@ -27,7 +27,7 @@ const LEAGUE_SLUGS = [
   'fra.1','fra.2','ned.1','por.1','bel.1','sco.1','tur.1',
   // Nordics / Central-East Europe
   'swe.1','nor.1','den.1','fin.1','pol.1','aut.1','sui.1',
-  'cze.1','cro.1','ser.1','rom.1','bul.1','ukr.1','gre.1',
+  'cze.1','gre.1','aut.1',  // cro/ser/rom/bul/ukr removed — HTTP 400 on Render
 
   // UEFA / international
   'uefa.champions','uefa.europa','uefa.europa.conf','uefa.nations',
@@ -86,9 +86,9 @@ const client = createHttpClient({
 });
 
 const ESPN_LIVE = new Set([
-  // ESPN soccer status.type.name values
+  // Standard ESPN soccer status.type.name — accept all live variants
   'STATUS_IN_PROGRESS',
-  'STATUS_HALFTIME',
+  'STATUS_HALFTIME',       // v11.06: explicit
   'STATUS_HALF_TIME',
   'STATUS_END_PERIOD',
   'STATUS_FIRST_HALF',
@@ -99,19 +99,18 @@ const ESPN_LIVE = new Set([
   'STATUS_SECOND_EXTRA',
   'STATUS_OVERTIME',
   'STATUS_PENALTY',
+  'STATUS_PENALTIES',      // v11.06: explicit alias
   'STATUS_AWAITING_PENALTIES',
   'STATUS_PENALTY_SHOOTOUT',
+  // Compact/state values
+  'IN', 'LIVE', 'HALFTIME', 'HALF_TIME', '1H', '2H', 'HT', 'ET', 'PEN',
+]);
 
-  // ESPN sometimes exposes state/detail style values instead of name
-  'IN',
-  'LIVE',
-  'HALFTIME',
-  'HALF_TIME',
-  '1H',
-  '2H',
-  'HT',
-  'ET',
-  'PEN'
+// Hard reject — only these explicitly disqualify a match
+const ESPN_DEAD = new Set([
+  'STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FINAL_PEN', 'STATUS_FINAL_AET',
+  'STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_ABANDONED',
+  'FULL_TIME', 'FINAL', 'POST',
 ]);
 
 const ESPN_SCHEDULED = new Set([
@@ -470,6 +469,97 @@ function dedupeMatches(matches) {
   return Array.from(map.values());
 }
 
+
+// ── PATCH 1 v11.06: fetchEventDetails — guaranteed-safe, no crash ─────────────
+// Called once per live match. Never throws. Returns {ok, stats, odds, debug}.
+async function fetchEventDetails(slug, eventId) {
+  const debug = {
+    testedEndpoints:  [],
+    successfulEndpoints: [],
+    discoveredKeys:   [],
+    hasStatistics:    false,
+    hasOdds:          false,
+    failReason:       null,
+  };
+
+  if (!eventId) {
+    debug.failReason = 'DETAIL_FETCH_SKIPPED_NO_ID';
+    return { ok:false, stats:null, odds:null, debug };
+  }
+
+  // Two URL patterns to try: site.api first, site.web second
+  const effectiveSlug = slug || 'all';
+  const urls = [
+    `${BASE}/${effectiveSlug}/summary?event=${eventId}`,
+    `${SITE_BASE}/${effectiveSlug}/summary?event=${eventId}`,
+  ];
+  // Fallback slugs if slug-specific fails
+  const slugFallbacks = ['all', 'eng.1', 'usa.1'];
+  const allUrls = [...urls];
+  if (!slugFallbacks.includes(effectiveSlug)) {
+    for (const fb of slugFallbacks) {
+      allUrls.push(`${BASE}/${fb}/summary?event=${eventId}`);
+    }
+  }
+
+  for (const url of allUrls) {
+    debug.testedEndpoints.push(url);
+    console.log(`[espn-details] fetching summary url ${url}`);
+    let res;
+    try {
+      res = await client.get(url);
+    } catch (e) {
+      console.log(`[espn-details] fetch error url=${url} err=${e.message}`);
+      continue;
+    }
+
+    console.log(`[espn-details] summary status=${res.status} ok=${res.ok} ct=${(res.contentType||'').slice(0,30)}`);
+    if (!res.ok) {
+      debug.failReason = `HTTP_${res.status}`;
+      continue;
+    }
+    if (!res.contentType || (!res.contentType.includes('json') && !res.contentType.includes('javascript'))) {
+      debug.failReason = 'DETAIL_PARSE_FAILED_NON_JSON';
+      continue;
+    }
+
+    let data;
+    try { data = JSON.parse(res.text); }
+    catch (e) {
+      debug.failReason = 'DETAIL_PARSE_FAILED_JSON';
+      console.log(`[espn-details] JSON parse error url=${url}`);
+      continue;
+    }
+
+    const topKeys = Object.keys(data || {}).slice(0, 20);
+    debug.successfulEndpoints.push(url);
+    debug.discoveredKeys = topKeys;
+    console.log(`[espn-details] stats keys=${topKeys.join(',').slice(0,120)}`);
+
+    // Extract statistics
+    const extracted = extractEspnStats(data);
+    if (extracted) {
+      debug.hasStatistics = extracted.hasAny;
+      debug.hasOdds       = extracted.oddsFound;
+      if (!extracted.hasAny) debug.failReason = 'DETAIL_OK_NO_STATS';
+      return {
+        ok:    true,
+        stats: extracted.stats,
+        odds:  extracted.oddsFound ? extracted.odds : null,
+        debug,
+      };
+    }
+
+    // 200 but no parseable stats
+    debug.failReason = 'DETAIL_OK_NO_STATS';
+    return { ok:true, stats:null, odds:null, debug };
+  }
+
+  // All URLs failed
+  if (!debug.failReason) debug.failReason = 'DETAIL_FETCH_FAILED';
+  return { ok:false, stats:null, odds:null, debug };
+}
+
 async function probe(endpoint, opts = {}) {
   const { acceptScheduled=false, debug=true, fetchStats=FORCE_ESPN_DETAILS } = opts;
   const slug = endpoint.split('/soccer/')[1]?.split('/')[0] || 'all';
@@ -564,12 +654,31 @@ async function probe(endpoint, opts = {}) {
         base.espnDetailsDebug.push({ eventId:'', failReason:'DETAIL_FETCH_SKIPPED_NO_ID' });
         continue;
       }
-      base.detailEndpointsTried++;
-      const details = await fetchEventDetails(eventSlug, eventId);
+    base.detailEndpointsTried++;
+      // PATCH 2: wrap in try/catch — detail failure must never abort provider
+      let details = { ok:false, stats:null, odds:null, debug:{ failReason:'DETAIL_PIPELINE_NOT_EXECUTED' } };
+      try {
+        details = await fetchEventDetails(eventSlug, eventId);
+      } catch (eDetail) {
+        console.log(`[espn-details] EXCEPTION eventId=${eventId} err=${eDetail.message}`);
+        base.detailFailReasons = base.detailFailReasons || [];
+        base.detailFailReasons.push({ eventId, error: eDetail.message });
+        m.stats = {}; m.hasStats = false;
+      }
       console.log(`[espn-details] result eventId=${eventId} ok=${details.ok} hasStats=${!!details.stats} statsKeys=${details.stats?Object.keys(details.stats).filter(k=>details.stats[k]!==null).join(','):'none'}`);
       base.espnDetailsDebug.push({
         eventId, match:`${m.match_hometeam_name} vs ${m.match_awayteam_name}`,
-        ...details.debug,
+        ...(details.debug || {}),
+        _espnDetailDebug: {
+          eventId, slug:eventSlug,
+          triedUrls:    (details.debug||{}).testedEndpoints   || [],
+          statusCodes:  [],
+          jsonParseOk:  (details.debug||{}).successfulEndpoints ? [(details.debug.successfulEndpoints.length > 0)] : [],
+          foundKeys:    (details.debug||{}).discoveredKeys    || [],
+          hasStats:     (details.debug||{}).hasStatistics     || false,
+          hasOdds:      (details.debug||{}).hasOdds           || false,
+          failReason:   (details.debug||{}).failReason        || null,
+        },
       });
       if (details.ok) {
         base.detailEndpointsSuccess++;
@@ -577,17 +686,20 @@ async function probe(endpoint, opts = {}) {
           m.stats    = details.stats;
           m.hasStats = Object.values(details.stats).some(v => v !== null);
           if (m.hasStats) { base.hasStatistics = true; console.log(`[espn-details] stats ok eventId=${eventId} keys=${Object.keys(details.stats).filter(k=>details.stats[k]!==null).join(',')}`); }
+          else { console.log(`[espn-details] DETAIL_OK_NO_STATS eventId=${eventId}`); }
         }
-        if (details.odds && Object.values(details.odds).some(v => v !== null)) {
+        if (details.odds && details.odds && Object.values(details.odds).some(v => v !== null)) {
           m.odds    = Object.assign({}, m.odds, details.odds);
           m.hasOdds = true;
           base.hasOdds = true;
           console.log(`[espn-details] odds ok eventId=${eventId}`);
         }
       } else {
-        console.log(`[espn-details] DETAIL_FETCH_FAILED eventId=${eventId} reason=${JSON.stringify(details.debug)}`);
-        m.stats    = {};
-        m.hasStats = false;
+        const fr = (details.debug||{}).failReason || 'DETAIL_FETCH_FAILED';
+        console.log(`[espn-details] ${fr} eventId=${eventId}`);
+        base.detailFailReasons = base.detailFailReasons || [];
+        base.detailFailReasons.push({ eventId, failReason: fr });
+        m.stats = {}; m.hasStats = false;
       }
     }
     for (const m of liveOnly.slice(3)) { m.stats={}; m.hasStats=false; }
@@ -608,26 +720,44 @@ async function probe(endpoint, opts = {}) {
 async function fetch(_browser, _options) {
   const fetchedAt=Date.now();
   let bestLive=null, bestDebug=null;
+  const workingEndpoints=[], failedEndpoints=[];
+  let totalDetailFailures=0;
 
   for (const endpoint of PRIMARY_ENDPOINTS) {
-    const r=await probe(endpoint, { acceptScheduled:false, debug:true, fetchStats:true });
-    console.log(`[espn] ${r.slug}/scoreboard → live=${r.parsedMatches} stats=${r.hasStatistics} odds=${r.hasOdds}`);
-    if (r.parsedMatches>0) { bestLive=r; break; }
-    if (!bestDebug && r.status===200) bestDebug=r;
+    let r;
+    try {
+      r = await probe(endpoint, { acceptScheduled:false, debug:true, fetchStats:true });
+      console.log(`[espn] ${r.slug}/scoreboard → live=${r.parsedMatches} stats=${r.hasStatistics} odds=${r.hasOdds} detailTried=${r.detailEndpointsTried} detailOk=${r.detailEndpointsSuccess}`);
+      if (r.status === 200) workingEndpoints.push(r.slug);
+      else failedEndpoints.push(r.slug + ':' + (r.failReason||r.status));
+      totalDetailFailures += (r.detailFailReasons||[]).length;
+      if (r.parsedMatches > 0) { bestLive = r; break; }
+      if (!bestDebug && r.status === 200) bestDebug = r;
+    } catch (eProbe) {
+      console.log(`[espn] PROBE_EXCEPTION endpoint=${endpoint} err=${eProbe.message}`);
+      failedEndpoints.push(endpoint.split('/soccer/')[1] + ':EXCEPTION');
+      // PATCH 5: Never abort — continue to next endpoint
+    }
   }
 
   const winner=bestLive||bestDebug;
   const espnDebug=winner?{
-    endpoint:             winner.endpoint,
-    rawEventCount:        winner.rawEventCount,
-    discoveredStatusTypes:winner.discoveredStatusTypes,
-    rejectedReasons:      winner.rejectedReasons,
-    parsedMatches:        winner.parsedMatches,
-    hasStatistics:        winner.hasStatistics,
-    hasOdds:              winner.hasOdds,
-    detailEndpointsTried: winner.detailEndpointsTried,
+    endpoint:              winner.endpoint,
+    rawEventCount:         winner.rawEventCount,
+    discoveredStatusTypes: winner.discoveredStatusTypes,
+    rejectedReasons:       winner.rejectedReasons,
+    parsedMatches:         winner.parsedMatches,
+    liveAcceptedCount:     winner.acceptedEventCount || 0,
+    rejectedByStatus:      winner.rejectedReasons || [],
+    hasStatistics:         winner.hasStatistics,
+    hasOdds:               winner.hasOdds,
+    detailEndpointsTried:  winner.detailEndpointsTried,
     detailEndpointsSuccess:winner.detailEndpointsSuccess,
-    espnDetailsDebug:     winner.espnDetailsDebug,
+    detailFailReasons:     winner.detailFailReasons || [],
+    detailFetchFailures:   totalDetailFailures,
+    workingEndpoints,
+    failedEndpoints,
+    espnDetailsDebug:      winner.espnDetailsDebug,
   }:null;
 
   console.log(`[espn] fetch done — live=${winner?.parsedMatches||0} hasStats=${winner?.hasStatistics} hasOdds=${winner?.hasOdds}`);
