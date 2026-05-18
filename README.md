@@ -1,32 +1,17 @@
-# CanliBet Scraper Service v11.02 — Public JSON Source Expansion
+# CanliBet Scraper Service v11.03 — Source Coverage Audit
 
-Goal:
+Fix focus:
 - Keep mock/demo disabled.
-- If ESPN has no live events, try additional public JSON endpoints.
-- No HTML scraping, no Playwright, no proxy, no CAPTCHA/fingerprint bypass.
+- Expand ESPN public JSON slug coverage for more leagues/countries.
+- Keep all requests HTTP JSON only.
+- No HTML scraping, no browser automation, no bypass/proxy.
 
-New adapters:
-- TheSportsDB public JSON live score probe
-- OpenLigaDB public JSON probe
+Important:
+If you see 10-15 live matches on other sites but only 2 here, the likely reason is source coverage:
+those sites include leagues/events that ESPN public JSON does not expose. This build expands ESPN slugs and keeps audit transparent so we can see which leagues are accessible.
 
-Recommended Render env:
-```text
-DISABLE_MOCK_FALLBACK=true
-ENABLE_MOCK_SOURCE=true
-ENABLE_ESPN_JSON_SOURCE=true
-ENABLE_THESPORTSDB_JSON_SOURCE=true
-ENABLE_OPENLIGADB_JSON_SOURCE=true
-ENABLE_FOTMOB_JSON_SOURCE=true
-ENABLE_AISCORE_JSON_SOURCE=true
-ENABLE_SOFASCORE_SOURCE=false
-CACHE_TTL_MS=30000
-PORT=10000
-```
-
-Validation URLs:
+Validation:
 ```text
 /live?force=true
 /audit
 ```
-
-If all public JSON sources return 0 live matches, the service correctly returns `matches: []` rather than fake/demo matches.
