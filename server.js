@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.01-live-status-final
+ * server.js — CanliBet Scraper Service v11.02-public-json-expansion
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -21,6 +21,8 @@ const ENABLE_SOFASCORE  = process.env.ENABLE_SOFASCORE_SOURCE      === 'true';  
 const ENABLE_ESPN       = process.env.ENABLE_ESPN_JSON_SOURCE      !== 'false'; // default on
 const ENABLE_FOTMOB     = process.env.ENABLE_FOTMOB_JSON_SOURCE    !== 'false'; // default on
 const ENABLE_AISCORE    = process.env.ENABLE_AISCORE_JSON_SOURCE   !== 'false'; // default on
+const ENABLE_THESPORTSDB = process.env.ENABLE_THESPORTSDB_JSON_SOURCE !== 'false'; // default on
+const ENABLE_OPENLIGADB  = process.env.ENABLE_OPENLIGADB_JSON_SOURCE  !== 'false'; // default on
 // v11.01: production safety — never publish demo/mock matches unless explicitly disabled.
 const DISABLE_MOCK_FALLBACK = String(process.env.DISABLE_MOCK_FALLBACK || 'true').toLowerCase() === 'true';
 
@@ -49,14 +51,18 @@ const AUDIT_ADAPTERS = [];  // used by /audit (all JSON probes)
 const espnMod     = require('./sources/source_espn_json');
 const fotmobMod   = require('./sources/source_fotmob_json');
 const aiscoreMod  = require('./sources/source_aiscore_json');
+const thesportsdbMod = require('./sources/source_thesportsdb_json');
+const openligadbMod  = require('./sources/source_openligadb_json');
 const mockMod     = require('./sources/source_mock');
 
 // Audit always includes all JSON probes
-AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod);
+AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
 if (ENABLE_SOFASCORE) AUDIT_ADAPTERS.push(require('./sources/source_sofascore'));
 
 // Live adapters — enabled sources first, mock last
 if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only)'); }
+if (ENABLE_THESPORTSDB) { LIVE_ADAPTERS.push(thesportsdbMod); log('Adapter: thesportsdb_json (HTTP-only)'); }
+if (ENABLE_OPENLIGADB)  { LIVE_ADAPTERS.push(openligadbMod);  log('Adapter: openligadb_json (HTTP-only)'); }
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
 if (ENABLE_AISCORE) { LIVE_ADAPTERS.push(aiscoreMod); log('Adapter: aiscore_json (HTTP-only)'); }
 if (ENABLE_SOFASCORE){ LIVE_ADAPTERS.push(require('./sources/source_sofascore')); log('Adapter: sofascore (HTTP-only)'); }
@@ -186,7 +192,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'11.01-live-status-final', uptime:Math.round(process.uptime()),
+  status:'ok', version:'11.02-public-json-expansion', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -275,7 +281,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.01-live-status-final listening on :${PORT}`);
+  log(`CanliBet scraper service v11.02-public-json-expansion listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
