@@ -1,103 +1,71 @@
-# CanliBet Scraper Service v10.81
+# CanliBet Scraper Service v10.93 — Stats Source Audit
 
-## Key fix in v10.81
-- Playwright is **never launched globally**.
-- Chromium only starts when a Playwright adapter is actually enabled.
-- `ENABLE_MOCK_SOURCE=true + ENABLE_SOFASCORE_SOURCE=false` → **no Chromium, no error**.
-- Playwright is an **optional** dependency.
+HTTP-only backend for CanliBet Pro.
 
-## Render Free Tier Deploy
+## Safety line
 
-```
-Build Command:  npm install
-Start Command:  node server.js
-```
+This build does **not** do HTML DOM scraping, browser automation, CAPTCHA bypass, fingerprint spoofing, proxy rotation, or paid/free API-key integrations. It only probes public JSON endpoints and gracefully fails when a source blocks or returns non-JSON.
 
-**Environment Variables:**
-| Variable | Value | Effect |
-|----------|-------|--------|
-| `PORT` | `10000` | Render default |
-| `ENABLE_MOCK_SOURCE` | `true` | Mock data (no Chromium) |
-| `ENABLE_SOFASCORE_SOURCE` | `false` | SofaScore disabled |
-| `CACHE_TTL_MS` | `30000` | 30s cache |
-| `LOG_REQUESTS` | `true` | Request logging |
+## Current architecture
 
-Expected startup log:
-```
-[...] Adapter: mock (HTTP-only)
-[...] Chromium disabled / skipped — no Playwright adapter active
-[...] CanliBet scraper service v10.81 — adapters: mock
-[...] CanliBet scraper service listening on :10000
-[...] Initial fetch complete
+- ESPN public JSON remains the primary live backbone for live matches, scores, minutes, status and partial odds.
+- `/stats-audit` probes secondary public JSON sources only for match-level statistics discovery.
+- Mock remains last fallback and must not be treated as real betting data.
+
+## Endpoints
+
+```text
+GET /health
+GET /live
+GET /audit
+GET /stats-audit
+GET /odds
+GET /snapshot
 ```
 
-## To Enable SofaScore (requires Playwright)
+## New in v10.93
 
-Change build command to:
-```
-npm install && npx playwright install chromium
-```
-Set env: `ENABLE_SOFASCORE_SOURCE=true`
+`GET /stats-audit` returns:
 
-## GET /health
-```json
-{
-  "status": "ok",
-  "version": "10.81",
-  "uptime": 12,
-  "cacheValid": true,
-  "cacheAge": "8s",
-  "adapters": [{ "provider": "mock", "needsPlaywright": false }],
-  "env": {
-    "PORT": 10000,
-    "CACHE_TTL_MS": 30000,
-    "ENABLE_MOCK_SOURCE": true,
-    "ENABLE_SOFASCORE_SOURCE": false,
-    "playwrightActive": false
-  }
-}
-```
-
-## GET /live
 ```json
 {
   "success": true,
-  "provider": "scraper",
-  "matches": [{
-    "match_id": "mock_001",
-    "match_hometeam_name": "Fenerbahçe",
-    "match_awayteam_name": "Beşiktaş",
-    "match_hometeam_score": 1,
-    "match_awayteam_score": 0,
-    "match_live": "1",
-    "match_status": "2H",
-    "minute": 67,
-    "league_name": "Süper Lig",
-    "source": "mock",
-    "hasOdds": true,
-    "hasStats": true,
-    "stats": { "attacks": 52, "dangerous_attacks": 18 },
-    "odds": { "home": 1.75, "draw": 3.40, "away": 4.50 }
-  }],
-  "debug": {
-    "selectedProvider": "scraper",
-    "sourcesTried": ["mock"],
-    "liveMatches": 3,
-    "cacheHit": false
-  }
+  "testedAt": "...",
+  "sources": [
+    {
+      "provider": "fotmob_stats",
+      "endpoint": "...",
+      "status": 200,
+      "contentType": "application/json",
+      "responseLength": 12345,
+      "jsonParseOk": true,
+      "topLevelKeys": [],
+      "hasMatchStats": true,
+      "foundStatKeys": ["shots_on_target", "corners"],
+      "sampleStats": [],
+      "failReason": "OK_STATS_KEYS_FOUND"
+    }
+  ],
+  "bestCandidates": []
 }
 ```
 
-## CanliBet Frontend Activation
-```js
-// core.js
-C.scraperBaseUrl     = 'https://your-service.onrender.com';
-C.liveScraperEnabled = true;
+## Recommended Render env
+
+```text
+PORT=10000
+CACHE_TTL_MS=30000
+ENABLE_MOCK_SOURCE=true
+ENABLE_SOFASCORE_SOURCE=false
+ENABLE_ESPN_JSON_SOURCE=true
+ENABLE_FOTMOB_JSON_SOURCE=true
+ENABLE_AISCORE_JSON_SOURCE=true
 ```
 
+## Render commands
 
-## v10.92 — Force ESPN detail fetch
-- /audit now calls ESPN probe with fetchStats:true.
-- ESPN detail enrichment is force-enabled by default via FORCE_ESPN_DETAILS=true.
-- ESPN summary URL candidates include site.api and site.web.api variants plus slug fallbacks.
-- Adds robust boxscore/header statistics extraction for shots, corners, possession, cards.
+```text
+Build Command: npm install
+Start Command: node server.js
+```
+

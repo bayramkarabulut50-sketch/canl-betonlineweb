@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.92-force-espn-detail-fetch
+ * server.js — CanliBet Scraper Service v10.93-stats-source-audit
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -10,6 +10,7 @@
 const express = require('express');
 const cors    = require('cors');
 const { mergeAdapterResults } = require('./normalizer');
+const statsAudit = require('./sources/source_stats_audit');
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 const PORT              = process.env.PORT             || 3847;
@@ -65,6 +66,7 @@ if (!anyPlaywright) log('Chromium disabled / skipped — no Playwright adapter a
 // ── Cache ─────────────────────────────────────────────────────────────────────
 let _snapshot = null;
 let _lastAuditResult = null;
+let _lastStatsAuditResult = null;
 const _sourceSuccessCounts = {};
 const _sourceFailReasons   = {};
 
@@ -101,6 +103,9 @@ async function runFetchCycle() {
     sourceSuccessCounts:counts, liveMatches:live.length,
     oddsMatchedCount:live.filter(m=>m.hasOdds).length,
     statsCoverage:live.filter(m=>m.hasStats).length,
+    statsProviderSelected:null,
+    statsSourcesTried:[],
+    statsSourceFailReasons:{},
     cacheHit:false, lastFetchAt:new Date(t0).toISOString(),
     lastLiveSource: results.find(r=>r.success&&r.matches?.length>0)?.provider || null,
   };
@@ -169,7 +174,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.92-force-espn-detail-fetch', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.93-stats-source-audit', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -184,6 +189,11 @@ app.get('/health', (_,res) => res.json({
     bestCandidates: _lastAuditResult.bestCandidates,
     sourcesCount:   _lastAuditResult.sources.length,
   } : null,
+  lastStatsAuditSummary:_lastStatsAuditResult ? {
+    testedAt:       _lastStatsAuditResult.testedAt,
+    bestCandidates: _lastStatsAuditResult.bestCandidates,
+    sourcesCount:   _lastStatsAuditResult.sources.length,
+  } : null,
   sourceSuccessCounts: _sourceSuccessCounts,
   sourceFailReasons:   _sourceFailReasons,
   env:{ PORT, CACHE_TTL_MS },
@@ -196,6 +206,10 @@ app.get('/live', async (req,res) => {
       selectedProvider:s.meta.lastLiveSource||'unknown',
       sourcesTried:s.meta.sourcesTried, sourceSuccessCounts:s.meta.sourceSuccessCounts,
       liveMatches:s.meta.liveMatches, oddsMatchedCount:s.meta.oddsMatchedCount,
+      statsCoverage:s.meta.statsCoverage,
+      statsProviderSelected:s.meta.statsProviderSelected,
+      statsSourcesTried:s.meta.statsSourcesTried,
+      statsSourceFailReasons:s.meta.statsSourceFailReasons,
       cacheHit:s.meta.cacheHit, lastFetchAt:s.meta.lastFetchAt, durationMs:s.meta.durationMs,
     }});
   } catch(err) {
@@ -215,6 +229,19 @@ app.get('/audit', async (req,res) => {
   }
 });
 
+
+app.get('/stats-audit', async (req,res) => {
+  try {
+    log('[stats-audit] Starting public JSON stats source audit...');
+    const result = await statsAudit.runStatsAudit();
+    _lastStatsAuditResult = result;
+    res.json(result);
+  } catch(err) {
+    log('[ERROR] /stats-audit', { error:err.message });
+    res.status(200).json({ success:false, error:err.message, sources:[], bestCandidates:[] });
+  }
+});
+
 app.get('/odds', async (_,res) => {
   try {
     const s = await getSnapshot();
@@ -230,7 +257,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v10.87-json-source-audit listening on :${PORT}`);
+  log(`CanliBet scraper service v10.93-stats-source-audit listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
