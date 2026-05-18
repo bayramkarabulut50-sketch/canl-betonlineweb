@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.03-source-coverage-audit
+ * server.js — CanliBet Scraper Service v11.04-no-key-coverage-tier
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -119,6 +119,7 @@ async function runFetchCycle() {
     statsCoverage:live.filter(m=>m.hasStats).length,
     signalCoverage:live.filter(m=>m.signalCount > 0).length,
     actionableSignals:live.reduce((a,m)=>a+(m.signalCount||0),0),
+    qualityTiers: live.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{}),
     statsProviderSelected:null,
     statsSourcesTried:[],
     statsSourceFailReasons:{},
@@ -192,7 +193,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'11.03-source-coverage-audit', uptime:Math.round(process.uptime()),
+  status:'ok', version:'11.04-no-key-coverage-tier', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -281,7 +282,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.03-source-coverage-audit listening on :${PORT}`);
+  log(`CanliBet scraper service v11.04-no-key-coverage-tier listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 

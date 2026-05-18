@@ -1,17 +1,17 @@
-# CanliBet Scraper Service v11.03 — Source Coverage Audit
+# CanliBet Scraper Service v11.04 — No-Key Coverage Tier
 
-Fix focus:
-- Keep mock/demo disabled.
-- Expand ESPN public JSON slug coverage for more leagues/countries.
-- Keep all requests HTTP JSON only.
-- No HTML scraping, no browser automation, no bypass/proxy.
+No API key. No paid API. No mock live matches.
+
+Purpose:
+- Keep all data sources public JSON / no-key only.
+- Do not reject real live matches just because stats or odds are missing.
+- Classify each real live match by coverage quality.
+
+Tiers:
+- FULL_STATS_SIGNAL: live + stats + odds
+- STATS_ONLY_SIGNAL: live + stats
+- ODDS_ONLY_WATCH: live + odds
+- BASIC_LIVE_ONLY: live score/minute/team only
 
 Important:
-If you see 10-15 live matches on other sites but only 2 here, the likely reason is source coverage:
-those sites include leagues/events that ESPN public JSON does not expose. This build expands ESPN slugs and keeps audit transparent so we can see which leagues are accessible.
-
-Validation:
-```text
-/live?force=true
-/audit
-```
+This increases honest coverage without fake data. If ESPN/public sources only expose 2 live matches, the service will still only show 2. The next expansion step is adding more no-key public JSON sources, not API-key providers.
