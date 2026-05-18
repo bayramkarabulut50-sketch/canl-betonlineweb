@@ -1,3 +1,5 @@
+# CanliBet Scraper Service v10.99 — Global ESPN Live Coverage
+
 # CanliBet Scraper Service v10.95 — Canonical Stats Mapping Fix
 
 ESPN public JSON remains the primary live backbone. This release fixes the canonical stats mapping so useful ESPN summary fields are not lost.

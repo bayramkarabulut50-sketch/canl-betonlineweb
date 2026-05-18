@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.96-real-signal-generation
+ * server.js — CanliBet Scraper Service v10.99-global-live-coverage
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -176,7 +176,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.95-real-stats-signal-engine', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.99-global-live-coverage', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
