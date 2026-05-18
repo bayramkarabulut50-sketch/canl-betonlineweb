@@ -91,9 +91,9 @@ function makeCanonical(raw, source) {
     dangerous_attacks: safeNum(rawStats.dangerous_attacks ?? rawStats.dangerousAttacks),
     shots_total:       safeNum(rawStats.shots_total ?? rawStats.shotsTotal),
     shots_on_target:   safeNum(rawStats.shots_on_target ?? rawStats.shotsOnTarget),
-    corners:           safeNum(rawStats.corners),
-    possession_home:   safeNum(rawStats.possession_home ?? rawStats.possessionHome),
-    possession_away:   safeNum(rawStats.possession_away ?? rawStats.possessionAway),
+    corners:           safeNum(rawStats.corners ?? rawStats.won_corners ?? rawStats.corner_kicks ?? rawStats.cornerKicks),
+    possession_home:   safeNum(rawStats.possession_home ?? rawStats.possessionHome ?? rawStats.home_possession),
+    possession_away:   safeNum(rawStats.possession_away ?? rawStats.possessionAway ?? rawStats.away_possession),
     yellow_cards:      safeNum(rawStats.yellow_cards ?? rawStats.yellowCards),
     red_cards:         safeNum(rawStats.red_cards   ?? rawStats.redCards),
   };

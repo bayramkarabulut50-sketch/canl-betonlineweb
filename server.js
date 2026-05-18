@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.93-stats-source-audit
+ * server.js — CanliBet Scraper Service v10.94-canonical-stats-mapping
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -174,7 +174,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.93-stats-source-audit', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.94-canonical-stats-mapping', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -257,7 +257,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v10.93-stats-source-audit listening on :${PORT}`);
+  log(`CanliBet scraper service v10.94-canonical-stats-mapping listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
