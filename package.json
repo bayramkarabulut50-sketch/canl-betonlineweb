@@ -1,6 +1,6 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "11.5.0",
+  "version": "11.6.0",
   "description": "CanliBet live data scraper backend \u2014 ESPN canonical stats mapping fix",
   "main": "server.js",
   "scripts": {

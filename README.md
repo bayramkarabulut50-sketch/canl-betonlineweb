@@ -1,17 +1,26 @@
-# CanliBet Scraper Service v11.04 — No-Key Coverage Tier
+# CanliBet Scraper Service v11.06 — Professional ESPN Global Aggregation
 
 No API key. No paid API. No mock live matches.
 
-Purpose:
-- Keep all data sources public JSON / no-key only.
-- Do not reject real live matches just because stats or odds are missing.
-- Classify each real live match by coverage quality.
+What changed:
+- ESPN adapter no longer stops at `/all/scoreboard`.
+- It scans all configured ESPN league slugs and aggregates matches.
+- Duplicate matches are removed by quality score.
+- `/live` debug includes `sourceGlobalAudit`:
+  - endpointsTried
+  - endpoints200
+  - rawEventsTotal
+  - parsedBeforeDedupe
+  - parsedAfterDedupe
+  - topEndpoints
+  - sampledFailures
+- League name fallback improved.
 
-Tiers:
-- FULL_STATS_SIGNAL: live + stats + odds
-- STATS_ONLY_SIGNAL: live + stats
-- ODDS_ONLY_WATCH: live + odds
-- BASIC_LIVE_ONLY: live score/minute/team only
+Why:
+If ESPN `/all` only shows 3 live matches, league-specific scoreboards may expose more. This build makes that visible and usable without API keys.
 
-Important:
-This increases honest coverage without fake data. If ESPN/public sources only expose 2 live matches, the service will still only show 2. The next expansion step is adding more no-key public JSON sources, not API-key providers.
+Validation:
+```text
+/live?force=true
+/audit
+```

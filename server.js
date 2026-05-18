@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.04-no-key-coverage-tier
+ * server.js — CanliBet Scraper Service v11.06-professional-espn-global
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -126,7 +126,9 @@ async function runFetchCycle() {
     cacheHit:false, lastFetchAt:new Date(t0).toISOString(),
     lastLiveSource: results.find(r=>r.success&&r.matches?.length>0&&r.provider!=='mock')?.provider || null,
     mockSuppressed: DISABLE_MOCK_FALLBACK,
-    note: live.length ? 'real_live_matches_found' : 'no_real_live_matches_from_current_sources'
+    note: live.length ? 'real_live_matches_found' : 'no_real_live_matches_from_current_sources',
+    noKeyCoverageNote: 'Only no-key/public JSON sources are used. Mock disabled. API-key sources intentionally excluded.',
+    sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit || null
   };
 
   _snapshot = { matches:live, allMatches:merged, meta, fetchedAt:t0, expiresAt:t0+CACHE_TTL_MS };
@@ -193,7 +195,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'11.04-no-key-coverage-tier', uptime:Math.round(process.uptime()),
+  status:'ok', version:'11.06-professional-espn-global', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -282,7 +284,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.04-no-key-coverage-tier listening on :${PORT}`);
+  log(`CanliBet scraper service v11.06-professional-espn-global listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
