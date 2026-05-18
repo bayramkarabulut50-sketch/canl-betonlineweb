@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v10.87-json-source-audit
+ * server.js — CanliBet Scraper Service v10.92-force-espn-detail-fetch
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -127,7 +127,7 @@ async function runAudit() {
       // Probe primary endpoint
       for (const ep of endpoints.slice(0,2)) {
         try {
-          const r = await adapter.probe(ep);
+          const r = await adapter.probe(ep, { fetchStats:true, debug:true });
           sources.push(r);
           log(`[audit] ${adapter.provider} ep=${ep} → status=${r.status} matches=${r.parsedMatches} reason=${r.failReason}`);
           if (r.parsedMatches > 0) break; // got data — no need to probe more endpoints
@@ -169,7 +169,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'10.91-espn-filter-fix', uptime:Math.round(process.uptime()),
+  status:'ok', version:'10.92-force-espn-detail-fetch', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,

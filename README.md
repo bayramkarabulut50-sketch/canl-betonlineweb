@@ -94,3 +94,10 @@ Set env: `ENABLE_SOFASCORE_SOURCE=true`
 C.scraperBaseUrl     = 'https://your-service.onrender.com';
 C.liveScraperEnabled = true;
 ```
+
+
+## v10.92 — Force ESPN detail fetch
+- /audit now calls ESPN probe with fetchStats:true.
+- ESPN detail enrichment is force-enabled by default via FORCE_ESPN_DETAILS=true.
+- ESPN summary URL candidates include site.api and site.web.api variants plus slug fallbacks.
+- Adds robust boxscore/header statistics extraction for shots, corners, possession, cards.
