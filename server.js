@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.10-espn-only-coverage-audit
+ * server.js — CanliBet Scraper Service v11.11-espn-status-heuristic-coverage
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -59,7 +59,7 @@ const mockMod     = require('./sources/source_mock');
 AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
 // v11.10: SofaScore intentionally excluded from audit/live by policy.
 
-// Live adapters — v11.10 ESPN-first/no-IP-sensitive coverage.
+// Live adapters — v11.11 ESPN-first/no-IP-sensitive coverage.
 // SofaScore removed. Primary live source is ESPN public JSON.
 if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only, primary)'); }
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
@@ -197,7 +197,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.10-espn-only-coverage-audit', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.11-espn-status-heuristic-coverage', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
