@@ -182,6 +182,45 @@ function applyLiveQualityTier(match) {
   return match;
 }
 
+function slugToLeagueName(slug) {
+  const map = {
+    'eng.1':'Premier League',       'eng.2':'Championship',
+    'esp.1':'LaLiga',               'esp.2':'LaLiga 2',
+    'ger.1':'Bundesliga',           'ger.2':'2. Bundesliga',
+    'ita.1':'Serie A',              'ita.2':'Serie B',
+    'fra.1':'Ligue 1',              'fra.2':'Ligue 2',
+    'ned.1':'Eredivisie',           'por.1':'Primeira Liga',
+    'bel.1':'First Division A',     'sco.1':'Scottish Premiership',
+    'tur.1':'Süper Lig',            'swe.1':'Allsvenskan',
+    'nor.1':'Eliteserien',          'den.1':'Superliga',
+    'fin.1':'Veikkausliiga',        'aut.1':'Bundesliga Austria',
+    'sui.1':'Super League Swiss',   'cze.1':'Czech First League',
+    'gre.1':'Super League Greece',
+    'uefa.champions':'Champions League','uefa.europa':'Europa League',
+    'uefa.europa.conf':'Conference League','uefa.nations':'UEFA Nations League',
+    'fifa.world':'FIFA World Cup',  'fifa.worldq':'World Cup Qualifying',
+    'fifa.friendly':'International Friendly','uefa.euro':'UEFA Euro',
+    'usa.1':'MLS',                  'usa.nwsl':'NWSL',
+    'mex.1':'Liga MX',              'mex.2':'Liga de Expansión',
+    'bra.1':'Brasileirão',          'bra.2':'Série B',
+    'arg.1':'Argentina Primera',    'arg.2':'Primera Nacional',
+    'col.1':'Categoría Primera A',  'chi.1':'Primera División Chile',
+    'per.1':'Liga 1 Perú',          'uru.1':'Primera División Uruguay',
+    'ecu.1':'LigaPro Ecuador',      'par.1':'División Profesional Paraguay',
+    'conmebol.libertadores':'Copa Libertadores',
+    'conmebol.sudamericana':'Copa Sudamericana',
+    'ind.1':'Indian Super League',  'aus.1':'A-League',
+    'jpn.1':'J1 League',            'jpn.2':'J2 League',
+    'kor.1':'K League 1',           'chn.1':'Chinese Super League',
+    'ksa.1':'Saudi Pro League',     'qat.1':'Qatar Stars League',
+    'idn.1':'Liga 1 Indonesia',     'tha.1':'Thai League 1',
+    'mys.1':'Malaysia Super League','zaf.1':'Premier Soccer League',
+    'egy.1':'Egyptian Premier League','mar.1':'Botola Pro',
+    'all':'ESPN Soccer',
+  };
+  return map[slug] || slug || 'ESPN Soccer';
+}
+
 function normEspnEvent(ev, acceptScheduled = false) {
   if (!ev) return null;
   const comp     = (ev.competitions || [])[0] || {};
@@ -219,7 +258,18 @@ function normEspnEvent(ev, acceptScheduled = false) {
     typeName==='STATUS_OVERTIME' ? 'OT' :
     isScheduled ? 'SCH' : 'LIVE'
   );
-  const leagueName = safeStr((ev.season&&ev.season.displayName)||(ev.league&&ev.league.name)||'');
+  const leagueSlug = ev._leagueSlug || '';
+  const eventLeagueName = (ev.season && ev.season.displayName) || '';
+  const leagueObj = ev.league || comp.league || {};
+  const leagueName =
+    safeStr(eventLeagueName) ||
+    safeStr(leagueObj.name) ||
+    safeStr(leagueObj.displayName) ||
+    safeStr(ev.leagueName) ||
+    safeStr(ev.competitionName) ||
+    safeStr(comp.leagueName) ||
+    slugToLeagueName(leagueSlug) ||
+    'ESPN Soccer';
 
   // Odds from scoreboard level (sometimes present)
   let odds = {};
@@ -247,7 +297,7 @@ function normEspnEvent(ev, acceptScheduled = false) {
     match_status:         ms,
     minute,
     league_name:          leagueName,
-    _leagueSlug:          ev._leagueSlug || '',   // passed from probe() loop
+    _leagueSlug:          leagueSlug,   // passed from probe() loop
     source:               'espn',
     _espnStatusType:      typeName,
     _isScheduled:         isScheduled,
@@ -719,58 +769,129 @@ async function probe(endpoint, opts = {}) {
 }
 
 // ── fetch() — used by /live ────────────────────────────────────────────────────
+// v11.08: TRUE global aggregation — scan ALL slugs, collect all live matches, dedupe.
+// Previous impl broke early on first match found; now we aggregate across all leagues.
 async function fetch(_browser, _options) {
-  const fetchedAt=Date.now();
-  let bestLive=null, bestDebug=null;
-  const workingEndpoints=[], failedEndpoints=[];
-  let totalDetailFailures=0;
+  const fetchedAt = Date.now();
+  const allMatches  = [];   // raw parsed matches (pre-dedupe)
+  const audits      = [];   // per-slug audit records
+  const workingEndpoints  = [];
+  const failedEndpoints   = [];
+  let rawEventsTotal       = 0;
+  let totalDetailFailures  = 0;
+  let rejectedByStatus     = {};
+  let detailFetchFailures  = [];
+  let bestDebug            = null;  // first 200 response for debug fallback
+
+  function extractSlugFromEndpoint(ep) {
+    try { return ep.split('/soccer/')[1].split('/')[0]; } catch(e) { return ep; }
+  }
 
   for (const endpoint of PRIMARY_ENDPOINTS) {
     let r;
     try {
-      r = await probe(endpoint, { acceptScheduled:false, debug:true, fetchStats:true });
-      console.log(`[espn] ${r.slug}/scoreboard → live=${r.parsedMatches} stats=${r.hasStatistics} odds=${r.hasOdds} detailTried=${r.detailEndpointsTried} detailOk=${r.detailEndpointsSuccess}`);
-      if (r.status === 200) workingEndpoints.push(r.slug);
-      else failedEndpoints.push(r.slug + ':' + (r.failReason||r.status));
-      totalDetailFailures += (r.detailFailReasons||[]).length;
-      if (r.parsedMatches > 0) { bestLive = r; break; }
+      r = await probe(endpoint, { acceptScheduled: false, debug: true, fetchStats: true });
+      const slug = r.slug || extractSlugFromEndpoint(endpoint);
+      console.log(`[espn-global-scan] slug=${slug} status=${r.status} raw=${r.rawEventCount||0} parsed=${r.parsedMatches||0} reason=${r.failReason}`);
+
+      if (r.status === 200) workingEndpoints.push(slug);
+      else failedEndpoints.push(slug + ':' + (r.failReason || r.status));
+
+      rawEventsTotal += (r.rawEventCount || 0);
+      totalDetailFailures += (r.detailFailReasons || []).length;
+      detailFetchFailures = detailFetchFailures.concat(r.detailFailReasons || []);
+
+      // Aggregate rejected-by-status counts
+      (r.rejectedReasons || []).forEach(function(rr) {
+        rejectedByStatus[rr] = (rejectedByStatus[rr] || 0) + 1;
+      });
+
+      audits.push({
+        slug,
+        endpoint: r.endpoint || endpoint,
+        status: r.status,
+        rawEventCount: r.rawEventCount || 0,
+        parsedMatches: r.parsedMatches || 0,
+        acceptedEventCount: r.acceptedEventCount || 0,
+        hasStatistics: r.hasStatistics || false,
+        hasOdds: r.hasOdds || false,
+        failReason: r.failReason,
+        discoveredStatusTypes: r.discoveredStatusTypes || [],
+        rejectedReasons: r.rejectedReasons || [],
+        detailEndpointsTried: r.detailEndpointsTried || 0,
+        detailEndpointsSuccess: r.detailEndpointsSuccess || 0,
+      });
+
+      if (r.parsedMatches > 0) {
+        allMatches.push(...(r.matches || []));
+      }
+
       if (!bestDebug && r.status === 200) bestDebug = r;
+
     } catch (eProbe) {
-      console.log(`[espn] PROBE_EXCEPTION endpoint=${endpoint} err=${eProbe.message}`);
-      failedEndpoints.push(endpoint.split('/soccer/')[1] + ':EXCEPTION');
-      // PATCH 5: Never abort — continue to next endpoint
+      const slug = extractSlugFromEndpoint(endpoint);
+      console.log(`[espn] PROBE_EXCEPTION slug=${slug} err=${eProbe.message}`);
+      failedEndpoints.push(slug + ':EXCEPTION');
+      audits.push({
+        slug,
+        endpoint,
+        status: null,
+        parsedMatches: 0,
+        failReason: 'ENDPOINT_EXCEPTION',
+        error: String(eProbe && eProbe.message || eProbe),
+      });
+      // Never abort — continue to next endpoint
     }
   }
 
-  const winner=bestLive||bestDebug;
-  const espnDebug=winner?{
-    endpoint:              winner.endpoint,
-    rawEventCount:         winner.rawEventCount,
-    discoveredStatusTypes: winner.discoveredStatusTypes,
-    rejectedReasons:       winner.rejectedReasons,
-    parsedMatches:         winner.parsedMatches,
-    liveAcceptedCount:     winner.acceptedEventCount || 0,
-    rejectedByStatus:      winner.rejectedReasons || [],
-    hasStatistics:         winner.hasStatistics,
-    hasOdds:               winner.hasOdds,
-    detailEndpointsTried:  winner.detailEndpointsTried,
-    detailEndpointsSuccess:winner.detailEndpointsSuccess,
-    detailFailReasons:     winner.detailFailReasons || [],
-    detailFetchFailures:   totalDetailFailures,
+  // Deduplicate by match_id (all/scoreboard often overlaps with eng.1, etc.)
+  const seenIds = new Set();
+  const deduped = [];
+  for (const m of allMatches) {
+    const key = m.match_id || (m.match_hometeam_name + '___' + m.match_awayteam_name);
+    if (!seenIds.has(key)) { seenIds.add(key); deduped.push(m); }
+  }
+
+  const globalAudit = {
+    endpointsTried:       PRIMARY_ENDPOINTS.length,
     workingEndpoints,
     failedEndpoints,
-    espnDetailsDebug:      winner.espnDetailsDebug,
-  }:null;
+    rawEventsTotal,
+    parsedBeforeDedupe:   allMatches.length,
+    parsedAfterDedupe:    deduped.length,
+    liveAcceptedCount:    deduped.length,
+    topEndpoints:         audits.filter(a => a.parsedMatches > 0),
+    sampledFailures:      audits.filter(a => !a.parsedMatches && a.failReason !== 'EMPTY' && a.failReason !== 'NO_LIVE_MATCHES_SCHEDULED_ONLY').slice(0, 15),
+    rejectedByStatus,
+    detailFetchFailures:  detailFetchFailures.slice(0, 20),
+  };
 
-  console.log(`[espn] fetch done — live=${winner?.parsedMatches||0} hasStats=${winner?.hasStatistics} hasOdds=${winner?.hasOdds}`);
+  console.log(`[espn] fetch done — endpoints=${PRIMARY_ENDPOINTS.length} working=${workingEndpoints.length} liveDeduped=${deduped.length} rawTotal=${rawEventsTotal}`);
+
+  const espnDebug = {
+    mode:                  'global_aggregation',
+    endpointsTried:        PRIMARY_ENDPOINTS.length,
+    parsedMatches:         deduped.length,
+    liveAcceptedCount:     deduped.length,
+    rawEventsTotal,
+    workingEndpoints,
+    failedEndpoints,
+    topEndpoints:          globalAudit.topEndpoints,
+    rejectedByStatus,
+    detailFetchFailures:   totalDetailFailures,
+  };
 
   return {
-    provider:'espn_json',
-    success:!!(winner&&winner.parsedMatches>0),
-    matches:winner?winner.matches:[],
-    error:winner?(winner.parsedMatches>0?null:winner.failReason):'no_endpoints_ok',
-    fetchedAt, _auditResult:winner, _espnDebug:espnDebug,
+    provider:       'espn_json',
+    success:        deduped.length > 0,
+    matches:        deduped,
+    error:          deduped.length > 0 ? null : (workingEndpoints.length > 0 ? 'no_live_matches' : 'no_endpoints_ok'),
+    fetchedAt,
+    _auditResult:   bestDebug,
+    _espnDebug:     espnDebug,
+    sourceGlobalAudit: globalAudit,
   };
 }
 
 module.exports = { fetch, probe, provider:'espn_json', needsPlaywright:false, ENDPOINTS:ALL_ENDPOINTS, PRIMARY_ENDPOINTS };
+
