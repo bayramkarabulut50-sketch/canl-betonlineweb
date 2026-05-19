@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.10-espn-date-window-coverage
+ * source_espn_json.js v11.11-espn-status-heuristic-coverage
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -48,27 +48,21 @@ function yyyymmddUTC(offsetDays = 0) {
 }
 
 function buildScoreboardEndpoints() {
-  const today = yyyymmddUTC(0);
-  const prev  = yyyymmddUTC(-1);
-  const next  = yyyymmddUTC(1);
+  // ESPN soccer can be date-window sensitive. Scan default + yesterday/today/tomorrow
+  // for every slug. This is still no-key public JSON; no browser/proxy/IP trick.
+  const offsets = [-1, 0, 1];
+  const dates = offsets.map(yyyymmddUTC);
   const eps = [];
   for (const slug of LEAGUE_SLUGS) {
     const base = `${BASE}/${slug}/scoreboard`;
-    // 1) default ESPN scoreboard (fast path)
     eps.push(base);
-    // 2) explicit date path: fixes cases where default calendar omits current matchday
-    eps.push(`${base}?dates=${today}&limit=200`);
-    // 3) all/scoreboard around timezone boundaries only; avoids scanning every slug 3x
-    if (slug === 'all') {
-      eps.push(`${base}?dates=${prev}&limit=200`);
-      eps.push(`${base}?dates=${next}&limit=200`);
-    }
+    for (const d of dates) eps.push(`${base}?dates=${d}&limit=200`);
   }
   return [...new Set(eps)];
 }
 
 const ALL_ENDPOINTS = buildScoreboardEndpoints();
-// v11.10: scan all slugs + explicit date variant. No browser, no proxy, no IP-sensitive source.
+// v11.11: scan all slugs + explicit date variants. No browser, no proxy, no IP-sensitive source.
 const PRIMARY_ENDPOINTS = ALL_ENDPOINTS;
 
 // Per-event detail endpoint patterns
@@ -107,47 +101,24 @@ const client = createHttpClient({
 
 const ESPN_LIVE = new Set([
   // Standard ESPN soccer status.type.name — accept all live variants
-  'STATUS_IN_PROGRESS',
-  'STATUS_HALFTIME',       // v11.06: explicit
-  'STATUS_HALF_TIME',
-  'STATUS_END_PERIOD',
-  'STATUS_FIRST_HALF',
-  'STATUS_SECOND_HALF',
-  'STATUS_EXTRA_TIME',
-  'STATUS_EXTRA_TIME_HALF_TIME',
-  'STATUS_FIRST_EXTRA',
-  'STATUS_SECOND_EXTRA',
-  'STATUS_OVERTIME',
-  'STATUS_PENALTY',
-  'STATUS_PENALTIES',      // v11.06: explicit alias
-  'STATUS_AWAITING_PENALTIES',
+  'STATUS_IN_PROGRESS', 'STATUS_HALFTIME', 'STATUS_HALF_TIME',
+  'STATUS_END_PERIOD', 'STATUS_FIRST_HALF', 'STATUS_SECOND_HALF',
+  'STATUS_EXTRA_TIME', 'STATUS_EXTRA_TIME_HALF_TIME',
+  'STATUS_FIRST_EXTRA', 'STATUS_SECOND_EXTRA', 'STATUS_OVERTIME',
+  'STATUS_PENALTY', 'STATUS_PENALTIES', 'STATUS_AWAITING_PENALTIES',
   'STATUS_PENALTY_SHOOTOUT',
   // Compact/state values
   'IN', 'LIVE', 'HALFTIME', 'HALF_TIME', '1H', '2H', 'HT', 'ET', 'PEN',
 ]);
 
-// Hard reject — only these explicitly disqualify a match
-const ESPN_DEAD = new Set([
-  'STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FINAL_PEN', 'STATUS_FINAL_AET',
-  'STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_ABANDONED',
-  'FULL_TIME', 'FINAL', 'POST',
-]);
-
 const ESPN_SCHEDULED = new Set([
-  'STATUS_SCHEDULED',
-  'STATUS_PREGAME',
-  'PRE',
-  'SCHEDULED'
+  'STATUS_SCHEDULED', 'STATUS_PREGAME', 'PRE', 'SCHEDULED'
 ]);
 
 const ESPN_FINAL = new Set([
-  'STATUS_FULL_TIME',
-  'STATUS_FINAL',
-  'STATUS_FINAL_PEN',
-  'STATUS_FINAL_AET',
-  'FULL_TIME',
-  'FINAL',
-  'POST'
+  'STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FINAL_PEN', 'STATUS_FINAL_AET',
+  'STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_CANCELLED', 'STATUS_ABANDONED',
+  'FULL_TIME', 'FINAL', 'POST', 'POSTPONED', 'CANCELED', 'CANCELLED', 'ABANDONED'
 ]);
 
 function normalizeEspnStatus(statusType = {}) {
@@ -156,28 +127,56 @@ function normalizeEspnStatus(statusType = {}) {
     statusType.state,
     statusType.detail,
     statusType.shortDetail,
-    statusType.description
-  ].filter(Boolean).map(x => String(x).trim().toUpperCase());
-  return parts;
+    statusType.description,
+    statusType.id,
+  ].filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+   .map(x => String(x).trim().toUpperCase());
+  return [...new Set(parts)];
 }
 
-function isEspnLiveStatus(statusType = {}) {
-  const parts = normalizeEspnStatus(statusType);
-  if (parts.some(p => ESPN_LIVE.has(p))) return true;
-  // Some payloads have state:"in" but name/detail empty.
-  if (parts.includes('IN')) return true;
-  return false;
+function parseEspnClockMinutes(statusType = {}, compStatus = {}) {
+  const rawClock = statusType.displayClock || compStatus.displayClock || statusType.shortDetail || statusType.detail || '';
+  const s = String(rawClock || '').toUpperCase();
+  const mm = s.match(/(\d{1,3})(?::\d{2})?/);
+  if (mm) {
+    const n = parseInt(mm[1], 10);
+    if (Number.isFinite(n) && n > 0 && n < 140) return n;
+  }
+  const period = Number(statusType.period || compStatus.period || 0);
+  if (period === 1) return 45;
+  if (period === 2) return 60;
+  if (period === 3) return 105;
+  if (period === 4) return 120;
+  return null;
 }
 
-function isEspnScheduledStatus(statusType = {}) {
-  const parts = normalizeEspnStatus(statusType);
-  return parts.some(p => ESPN_SCHEDULED.has(p));
+function hasLiveKeyword(parts) {
+  const hay = parts.join(' ');
+  return ESPN_LIVE.has(parts[0]) ||
+    parts.some(p => ESPN_LIVE.has(p)) ||
+    /\b(IN|LIVE|1H|2H|HT|ET|PEN)\b/.test(hay) ||
+    /IN[_\s-]?PROGRESS|FIRST[_\s-]?HALF|SECOND[_\s-]?HALF|HALF[_\s-]?TIME|HALFTIME|END[_\s-]?PERIOD|EXTRA[_\s-]?TIME|PENALT/.test(hay);
 }
 
 function isEspnFinalStatus(statusType = {}) {
   const parts = normalizeEspnStatus(statusType);
   if (statusType.completed === true) return true;
-  return parts.some(p => ESPN_FINAL.has(p));
+  return parts.some(p => ESPN_FINAL.has(p)) || /FULL[_\s-]?TIME|FINAL|POSTPONED|CANCELED|CANCELLED|ABANDONED/.test(parts.join(' '));
+}
+
+function isEspnScheduledStatus(statusType = {}) {
+  const parts = normalizeEspnStatus(statusType);
+  return parts.some(p => ESPN_SCHEDULED.has(p)) || /SCHEDULED|PREGAME|\bPRE\b/.test(parts.join(' '));
+}
+
+function isEspnLiveStatus(statusType = {}, compStatus = {}) {
+  if (isEspnFinalStatus(statusType)) return false;
+  const parts = normalizeEspnStatus(statusType);
+  if (hasLiveKeyword(parts)) return true;
+  // ESPN sometimes gives state:"in" with no STATUS_* name.
+  if (String(statusType.state || '').toLowerCase() === 'in') return true;
+  const min = parseEspnClockMinutes(statusType, compStatus);
+  return min != null && min > 0 && min < 140 && !isEspnScheduledStatus(statusType);
 }
 
 // ── Event normalizer (scoreboard payload) ─────────────────────────────────────
@@ -256,15 +255,16 @@ function normEspnEvent(ev, acceptScheduled = false) {
   if (!ev) return null;
   const comp     = (ev.competitions || [])[0] || {};
   const statusType = (comp.status && comp.status.type) || (ev.status && ev.status.type) || {};
+  const compStatus = comp.status || ev.status || {};
   const statusParts = normalizeEspnStatus(statusType);
   const typeName   = statusParts[0] || '';
-  const isLive      = isEspnLiveStatus(statusType);
+  const isLive      = isEspnLiveStatus(statusType, compStatus);
   const isScheduled = isEspnScheduledStatus(statusType);
   const isFinal     = isEspnFinalStatus(statusType);
   const eventId     = safeStr(ev.id || (ev.competitions&&ev.competitions[0]&&ev.competitions[0].id) || '');
 
   // Per-event filter log — always emitted so Render shows exactly what's happening
-  console.log(`[espn-filter] id=${eventId} status="${typeName}" parts=${JSON.stringify(statusParts)} completed=${!!statusType.completed} isLive=${isLive} isScheduled=${isScheduled} isFinal=${isFinal} accepted=${isLive}`);
+  console.log(`[espn-filter] id=${eventId} status="${typeName}" parts=${JSON.stringify(statusParts)} clock="${(statusType.displayClock || (comp.status&&comp.status.displayClock) || '')}" minute=${parseEspnClockMinutes(statusType, comp.status || ev.status || {})} completed=${!!statusType.completed} isLive=${isLive} isScheduled=${isScheduled} isFinal=${isFinal} accepted=${isLive}`);
 
   if (!typeName) {
     console.log(`[espn-filter] REJECT_NO_STATUS id=${eventId}`);
@@ -278,8 +278,8 @@ function normEspnEvent(ev, acceptScheduled = false) {
   const competitors = comp.competitors || ev.competitors || [];
   const home = competitors.find(c => c.homeAway==='home') || competitors[0] || {};
   const away = competitors.find(c => c.homeAway==='away') || competitors[1] || {};
-  const clock  = statusType.displayClock || (comp.status && comp.status.displayClock) || '';
-  const minute = clock ? safeNum(parseInt(clock)) : safeNum(statusType.period);
+  const clock  = statusType.displayClock || (comp.status && comp.status.displayClock) || statusType.detail || statusType.shortDetail || '';
+  const minute = parseEspnClockMinutes(statusType, comp.status || ev.status || {}) || null;
   const ms = (
     (typeName==='STATUS_HALFTIME'||typeName==='STATUS_HALF_TIME') ? 'HT' :
     (typeName==='STATUS_FIRST_HALF'||typeName==='STATUS_IN_PROGRESS') ? '1H' :
@@ -453,6 +453,7 @@ async function fetch(_browser, _options) {
   let failedEndpoints = 0;
   let detailFetchFailures = 0;
   const rejectedByStatus = {};
+  const statusTypeCounts = {};
 
   for (const ep of PRIMARY_ENDPOINTS) {
     try {
@@ -471,6 +472,7 @@ async function fetch(_browser, _options) {
 
       if (r.status === 200) workingEndpoints++; else failedEndpoints++;
       for (const rr of (r.rejectedReasons || [])) rejectedByStatus[rr] = (rejectedByStatus[rr] || 0) + 1;
+      for (const st of (r.discoveredStatusTypes || [])) statusTypeCounts[st] = (statusTypeCounts[st] || 0) + 1;
       for (const d of (r.espnDetailsDebug || [])) if (d && d.failReason) detailFetchFailures++;
       if (r.parsedMatches > 0) allMatches.push(...(r.matches || []));
 
@@ -493,6 +495,7 @@ async function fetch(_browser, _options) {
     parsedBeforeDedupe: allMatches.length,
     parsedAfterDedupe: deduped.length,
     rejectedByStatus,
+    statusTypeCounts,
     detailFetchFailures,
     qualityTiers,
     topEndpoints: audits.filter(x=>x.parsedMatches>0).sort((a,b)=>(b.parsedMatches||0)-(a.parsedMatches||0)).slice(0,10),
@@ -811,6 +814,7 @@ async function fetch(_browser, _options) {
   let rawEventsTotal       = 0;
   let totalDetailFailures  = 0;
   let rejectedByStatus     = {};
+  let statusTypeCounts     = {};
   let detailFetchFailures  = [];
   let bestDebug            = null;  // first 200 response for debug fallback
 
@@ -835,6 +839,9 @@ async function fetch(_browser, _options) {
       // Aggregate rejected-by-status counts
       (r.rejectedReasons || []).forEach(function(rr) {
         rejectedByStatus[rr] = (rejectedByStatus[rr] || 0) + 1;
+      });
+      (r.discoveredStatusTypes || []).forEach(function(st) {
+        statusTypeCounts[st] = (statusTypeCounts[st] || 0) + 1;
       });
 
       audits.push({
@@ -892,8 +899,9 @@ async function fetch(_browser, _options) {
     parsedAfterDedupe:    deduped.length,
     liveAcceptedCount:    deduped.length,
     topEndpoints:         audits.filter(a => a.parsedMatches > 0),
-    sampledFailures:      audits.filter(a => !a.parsedMatches && a.failReason !== 'EMPTY' && a.failReason !== 'NO_LIVE_MATCHES_SCHEDULED_ONLY').slice(0, 15),
+    sampledFailures:      audits.filter(a => !a.parsedMatches && a.failReason !== 'EMPTY_RESPONSE' && a.failReason !== 'NO_LIVE_MATCHES_SCHEDULED_ONLY').slice(0, 15),
     rejectedByStatus,
+    statusTypeCounts,
     detailFetchFailures:  detailFetchFailures.slice(0, 20),
   };
 
@@ -909,6 +917,7 @@ async function fetch(_browser, _options) {
     failedEndpoints,
     topEndpoints:          globalAudit.topEndpoints,
     rejectedByStatus,
+    statusTypeCounts,
     detailFetchFailures:   totalDetailFailures,
   };
 
