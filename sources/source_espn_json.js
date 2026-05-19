@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.04-no-key-coverage-tier
+ * source_espn_json.js v11.10-espn-date-window-coverage
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -30,15 +30,46 @@ const LEAGUE_SLUGS = [
   'conmebol.libertadores','conmebol.sudamericana',
   // Asia / Oceania / Africa
   'ind.1','aus.1','jpn.1','jpn.2','kor.1','chn.1','ksa.1','qat.1',
-  'idn.1','tha.1','mys.1','zaf.1','egy.1','mar.1'
+  'idn.1','tha.1','mys.1','zaf.1','egy.1','mar.1',
+
+  // Extra ESPN no-key soccer slugs / cup & international windows. Some may 404; audit records that safely.
+  'eng.fa','eng.league_cup','eng.trophy','esp.copa_del_rey','ita.coppa_italia','ger.dfb_pokal','fra.coupe_de_france',
+  'club.friendly','concacaf.champions','concacaf.gold','concacaf.nations.league',
+  'fifa.u20','fifa.u17','fifa.wwc','fifa.olympics','uefa.wchampions','uefa.euroq',
+  'fifa.worldq.uefa','fifa.worldq.conmebol','fifa.worldq.concacaf','fifa.worldq.afc','fifa.worldq.caf','fifa.worldq.ofc'
 ];
 const BASE      = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const SITE_BASE = 'https://site.web.api.espn.com/apis/site/v2/sports/soccer';
 const WEB_BASE  = 'https://site.web.api.espn.com/apis/v2/sports/soccer';
 const FORCE_ESPN_DETAILS = process.env.FORCE_ESPN_DETAILS !== 'false';
-const ALL_ENDPOINTS    = LEAGUE_SLUGS.map(s => `${BASE}/${s}/scoreboard`);
-// v10.99: scan all configured slugs in /live, not only first 5. This fixes false 0-live when active games are outside top-5 slugs.
-const PRIMARY_ENDPOINTS = LEAGUE_SLUGS.map(s => `${BASE}/${s}/scoreboard`);
+function yyyymmddUTC(offsetDays = 0) {
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+function buildScoreboardEndpoints() {
+  const today = yyyymmddUTC(0);
+  const prev  = yyyymmddUTC(-1);
+  const next  = yyyymmddUTC(1);
+  const eps = [];
+  for (const slug of LEAGUE_SLUGS) {
+    const base = `${BASE}/${slug}/scoreboard`;
+    // 1) default ESPN scoreboard (fast path)
+    eps.push(base);
+    // 2) explicit date path: fixes cases where default calendar omits current matchday
+    eps.push(`${base}?dates=${today}&limit=200`);
+    // 3) all/scoreboard around timezone boundaries only; avoids scanning every slug 3x
+    if (slug === 'all') {
+      eps.push(`${base}?dates=${prev}&limit=200`);
+      eps.push(`${base}?dates=${next}&limit=200`);
+    }
+  }
+  return [...new Set(eps)];
+}
+
+const ALL_ENDPOINTS = buildScoreboardEndpoints();
+// v11.10: scan all slugs + explicit date variant. No browser, no proxy, no IP-sensitive source.
+const PRIMARY_ENDPOINTS = ALL_ENDPOINTS;
 
 // Per-event detail endpoint patterns
 const DETAIL_PATHS = ['summary'];
@@ -69,8 +100,8 @@ function classifyStatus(s) {
 const client = createHttpClient({
   referer:   'https://www.espn.com/soccer/',
   origin:    'https://www.espn.com',
-  minPaceMs: 400,
-  timeoutMs: 9000,
+  minPaceMs: 180,
+  timeoutMs: 6500,
   maxRetries: 1,
 });
 
