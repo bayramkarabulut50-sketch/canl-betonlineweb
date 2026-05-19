@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.11-espn-status-heuristic-coverage
+ * server.js — CanliBet Scraper Service v11.12-fast-espn-live-frontend-fix
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -99,7 +99,7 @@ async function runFetchCycle() {
 
     const t1 = Date.now();
     let r;
-    try { r = await adapter.fetch(null, { cache:_snapshot }); }
+    try { r = await adapter.fetch(null, { cache:_snapshot, fullScan:false }); }
     catch(err) { r = { provider:name, success:false, matches:[], error:err.message, fetchedAt:Date.now() }; }
     const ms = Date.now()-t1;
     log(`[${name}] done`, { ok:r.success, n:r.matches?.length??0, ms, err:r.error??null });
@@ -197,7 +197,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.11-espn-status-heuristic-coverage', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.12-fast-espn-live-frontend-fix', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
