@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.07-critical-global-aggregation
+ * server.js — CanliBet Scraper Service v11.10-espn-only-coverage-audit
  *
  * This version tests public JSON endpoints only.
  * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
@@ -17,7 +17,7 @@ const PORT              = process.env.PORT             || 3847;
 const CACHE_TTL_MS      = parseInt(process.env.CACHE_TTL_MS || '30000', 10);
 const LOG_REQUESTS      = process.env.LOG_REQUESTS !== 'false';
 const ENABLE_MOCK       = process.env.ENABLE_MOCK_SOURCE           !== 'false';
-const ENABLE_SOFASCORE  = process.env.ENABLE_SOFASCORE_SOURCE      === 'true';  // default off (403 on Render)
+const ENABLE_SOFASCORE  = false; // v11.10: disabled by policy. No SofaScore/IP-sensitive source.
 const ENABLE_ESPN       = process.env.ENABLE_ESPN_JSON_SOURCE      !== 'false'; // default on
 const ENABLE_FOTMOB     = process.env.ENABLE_FOTMOB_JSON_SOURCE    !== 'false'; // default on
 const ENABLE_AISCORE    = process.env.ENABLE_AISCORE_JSON_SOURCE   !== 'false'; // default on
@@ -57,15 +57,16 @@ const mockMod     = require('./sources/source_mock');
 
 // Audit always includes all JSON probes
 AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
-if (ENABLE_SOFASCORE) AUDIT_ADAPTERS.push(require('./sources/source_sofascore'));
+// v11.10: SofaScore intentionally excluded from audit/live by policy.
 
-// Live adapters — enabled sources first, mock last
-if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only)'); }
-if (ENABLE_THESPORTSDB) { LIVE_ADAPTERS.push(thesportsdbMod); log('Adapter: thesportsdb_json (HTTP-only)'); }
-if (ENABLE_OPENLIGADB)  { LIVE_ADAPTERS.push(openligadbMod);  log('Adapter: openligadb_json (HTTP-only)'); }
+// Live adapters — v11.10 ESPN-first/no-IP-sensitive coverage.
+// SofaScore removed. Primary live source is ESPN public JSON.
+if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only, primary)'); }
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
-if (ENABLE_AISCORE) { LIVE_ADAPTERS.push(aiscoreMod); log('Adapter: aiscore_json (HTTP-only)'); }
-if (ENABLE_SOFASCORE){ LIVE_ADAPTERS.push(require('./sources/source_sofascore')); log('Adapter: sofascore (HTTP-only)'); }
+if (ENABLE_OPENLIGADB)  { LIVE_ADAPTERS.push(openligadbMod);  log('Adapter: openligadb_json (HTTP-only)'); }
+if (ENABLE_THESPORTSDB) { LIVE_ADAPTERS.push(thesportsdbMod); log('Adapter: thesportsdb_json (HTTP-only)'); }
+// AIScore usually returns Cloudflare 403 from Render; keep opt-in to avoid slow live cycles.
+if (String(process.env.ENABLE_AISCORE_LIVE || 'false').toLowerCase() === 'true' && ENABLE_AISCORE) { LIVE_ADAPTERS.push(aiscoreMod); log('Adapter: aiscore_json (HTTP-only, opt-in)'); }
 if (ENABLE_MOCK)    { LIVE_ADAPTERS.push(mockMod);    log('Adapter: mock (fallback)'); }
 
 const anyPlaywright = ENABLE_SOFASCORE && false; // sofascore v10.87 is HTTP-only too
@@ -107,7 +108,7 @@ async function runFetchCycle() {
     _sourceSuccessCounts[name] = (_sourceSuccessCounts[name]||0) + (r.success ? 1 : 0);
     if (!r.success) _sourceFailReasons[name] = r.error || 'unknown';
 
-    if (r.success && r.matches?.length > 0 && name !== 'mock') break;
+    // v11.10: continue through enabled public JSON sources, but SofaScore/IP-sensitive sources are excluded.
   }
 
   const merged = mergeAdapterResults(results);
@@ -126,8 +127,8 @@ async function runFetchCycle() {
     cacheHit:false, lastFetchAt:new Date(t0).toISOString(),
     lastLiveSource: results.find(r=>r.success&&r.matches?.length>0&&r.provider!=='mock')?.provider || null,
     mockSuppressed: DISABLE_MOCK_FALLBACK,
-    note: live.length ? 'real_live_matches_found' : 'no_real_live_matches_from_current_sources',
-    noKeyCoverageNote: 'Only no-key/public JSON sources are used. Mock disabled. API-key sources intentionally excluded.',
+    note: live.length ? 'real_live_matches_found_multi_source' : 'no_real_live_matches_from_current_sources',
+    noKeyCoverageNote: 'Only no-key/public JSON sources are used. Mock disabled. API-key and IP-sensitive sources such as SofaScore are intentionally excluded.',
     sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
                        results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null
   };
@@ -196,13 +197,13 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.08-watch-global-league-fix', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.10-espn-only-coverage-audit', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
     fotmob_json:  ENABLE_FOTMOB,
     aiscore_json: ENABLE_AISCORE,
-    sofascore:    ENABLE_SOFASCORE,
+    sofascore:    false,
     mock:         ENABLE_MOCK,
   },
   lastLiveSource:  _snapshot?.meta?.lastLiveSource || null,
