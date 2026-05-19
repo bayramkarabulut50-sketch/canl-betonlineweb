@@ -128,7 +128,8 @@ async function runFetchCycle() {
     mockSuppressed: DISABLE_MOCK_FALLBACK,
     note: live.length ? 'real_live_matches_found' : 'no_real_live_matches_from_current_sources',
     noKeyCoverageNote: 'Only no-key/public JSON sources are used. Mock disabled. API-key sources intentionally excluded.',
-    sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit || null
+    sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
+                       results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null
   };
 
   _snapshot = { matches:live, allMatches:merged, meta, fetchedAt:t0, expiresAt:t0+CACHE_TTL_MS };
@@ -195,7 +196,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.07-critical-global-aggregation', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.08-watch-global-league-fix', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -222,7 +223,8 @@ app.get('/health', (_,res) => res.json({
 
 app.get('/live', async (req,res) => {
   try {
-    const s = await getSnapshot(req.query.refresh==='1');
+    const force = req.query.force === 'true' || req.query.refresh === '1';
+    const s = await getSnapshot(force);
     res.json({ success:true, provider:'scraper', matches:s.matches, debug:{
       selectedProvider:s.meta.lastLiveSource||'unknown',
       sourcesTried:s.meta.sourcesTried, sourceSuccessCounts:s.meta.sourceSuccessCounts,
@@ -238,6 +240,8 @@ app.get('/live', async (req,res) => {
       statsSourcesTried:s.meta.statsSourcesTried,
       statsSourceFailReasons:s.meta.statsSourceFailReasons,
       cacheHit:s.meta.cacheHit, lastFetchAt:s.meta.lastFetchAt, durationMs:s.meta.durationMs,
+      // v11.08: ESPN global scan audit — visible at /live?force=true
+      sourceGlobalAudit: s.meta.sourceGlobalAudit || null,
     }});
   } catch(err) {
     log('[ERROR] /live', { error:err.message });
@@ -249,7 +253,18 @@ app.get('/audit', async (req,res) => {
   try {
     log('[audit] Starting JSON source audit...');
     const result = await runAudit();
-    res.json({ success:true, renderHost:true, ...result });
+    // v11.08: attach ESPN global scan audit from last snapshot if available
+    const espnGlobalAudit = _snapshot?.meta?.sourceGlobalAudit || null;
+    res.json({ success:true, renderHost:true, ...result,
+      espnGlobalAudit,
+      espnAuditSummary: espnGlobalAudit ? {
+        endpointsTried:    espnGlobalAudit.endpointsTried,
+        workingEndpoints:  espnGlobalAudit.workingEndpoints?.length || 0,
+        liveAcceptedCount: espnGlobalAudit.liveAcceptedCount,
+        parsedAfterDedupe: espnGlobalAudit.parsedAfterDedupe,
+        topEndpoints:      (espnGlobalAudit.topEndpoints||[]).map(e=>({slug:e.slug,parsedMatches:e.parsedMatches})),
+      } : null,
+    });
   } catch(err) {
     log('[ERROR] /audit', { error:err.message });
     res.status(200).json({ success:false, error:err.message, sources:[], bestCandidates:[] });
