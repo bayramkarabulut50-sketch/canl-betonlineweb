@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.11-espn-status-heuristic-coverage
+ * source_espn_json.js v11.13-fast-live-scan-fix
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -848,7 +848,12 @@ async function fetch(_browser, _options) {
     try { return ep.split('/soccer/')[1].split('/')[0]; } catch(e) { return ep; }
   }
 
-  for (const endpoint of PRIMARY_ENDPOINTS) {
+  // v11.13: use compact fast endpoint set for /live. Full 360 scan only when explicitly requested.
+  const scanMode = (_options && _options.fullScan) ? 'full' : 'fast';
+  const scanEndpoints = scanMode === 'full' ? PRIMARY_ENDPOINTS : LIVE_FAST_ENDPOINTS;
+  console.log(`[espn] fetch scanMode=${scanMode} endpoints=${scanEndpoints.length}`);
+
+  for (const endpoint of scanEndpoints) {
     let r;
     try {
       r = await probe(endpoint, { acceptScheduled: false, debug: true, fetchStats: true });
@@ -917,7 +922,7 @@ async function fetch(_browser, _options) {
   }
 
   const globalAudit = {
-    endpointsTried:       PRIMARY_ENDPOINTS.length,
+    endpointsTried:       scanEndpoints.length,
     workingEndpoints,
     failedEndpoints,
     rawEventsTotal,
@@ -931,11 +936,11 @@ async function fetch(_browser, _options) {
     detailFetchFailures:  detailFetchFailures.slice(0, 20),
   };
 
-  console.log(`[espn] fetch done — endpoints=${PRIMARY_ENDPOINTS.length} working=${workingEndpoints.length} liveDeduped=${deduped.length} rawTotal=${rawEventsTotal}`);
+  console.log(`[espn] fetch done — mode=${scanMode} endpoints=${scanEndpoints.length} working=${workingEndpoints.length} liveDeduped=${deduped.length} rawTotal=${rawEventsTotal}`);
 
   const espnDebug = {
     mode:                  'global_aggregation',
-    endpointsTried:        PRIMARY_ENDPOINTS.length,
+    endpointsTried:        scanEndpoints.length,
     parsedMatches:         deduped.length,
     liveAcceptedCount:     deduped.length,
     rawEventsTotal,
