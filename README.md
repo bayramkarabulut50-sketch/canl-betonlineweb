@@ -1,26 +1,16 @@
-# CanliBet Scraper Service v11.06 — Professional ESPN Global Aggregation
+# CanliBet Scraper Service v11.07 — Critical Fix + ESPN Global Aggregation
 
-No API key. No paid API. No mock live matches.
+Base: uploaded v11.06-critical-fix.
 
-What changed:
-- ESPN adapter no longer stops at `/all/scoreboard`.
-- It scans all configured ESPN league slugs and aggregates matches.
-- Duplicate matches are removed by quality score.
-- `/live` debug includes `sourceGlobalAudit`:
-  - endpointsTried
-  - endpoints200
-  - rawEventsTotal
-  - parsedBeforeDedupe
-  - parsedAfterDedupe
-  - topEndpoints
-  - sampledFailures
-- League name fallback improved.
+Fix:
+- Keeps safe `fetchEventDetails`.
+- Keeps provider crash resilience.
+- Adds professional ESPN global aggregation across all configured no-key ESPN scoreboards.
+- Removes known dead 400 slugs from the curated list.
+- Deduplicates matches by quality score.
+- Adds `sourceGlobalAudit` to `/live` debug.
 
-Why:
-If ESPN `/all` only shows 3 live matches, league-specific scoreboards may expose more. This build makes that visible and usable without API keys.
-
-Validation:
-```text
-/live?force=true
-/audit
-```
+No API key.
+No paid API.
+No mock live matches.
+No HTML scraping.
