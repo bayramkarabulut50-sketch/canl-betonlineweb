@@ -62,7 +62,28 @@ function buildScoreboardEndpoints() {
 }
 
 const ALL_ENDPOINTS = buildScoreboardEndpoints();
-// v11.11: scan all slugs + explicit date variants. No browser, no proxy, no IP-sensitive source.
+
+// v11.12: /live must be fast. ESPN /all/scoreboard usually aggregates the active ESPN soccer board;
+// then we probe a compact set of high-yield slugs. Full 360-endpoint scan stays for /audit only.
+const LIVE_FAST_SLUGS = [
+  'all','aut.1','usa.1','usa.nwsl','mex.1','mex.2','bra.1','bra.2','arg.1','arg.2',
+  'chn.1','jpn.1','kor.1','ksa.1','idn.1','tha.1','mys.1','aus.1','swe.1','nor.1',
+  'eng.1','esp.1','ger.1','ita.1','fra.1','tur.1',
+  'fifa.friendly','club.friendly','conmebol.libertadores','conmebol.sudamericana','uefa.champions','uefa.europa'
+];
+function buildFastScoreboardEndpoints() {
+  const today = yyyymmddUTC(0);
+  const eps = [];
+  for (const slug of LIVE_FAST_SLUGS) {
+    const base = `${BASE}/${slug}/scoreboard`;
+    eps.push(base);
+    // today only, no yesterday/tomorrow in live path
+    eps.push(`${base}?dates=${today}&limit=200`);
+  }
+  return [...new Set(eps)];
+}
+const LIVE_FAST_ENDPOINTS = buildFastScoreboardEndpoints();
+// Full scan remains available for audit/research; live path uses LIVE_FAST_ENDPOINTS by default.
 const PRIMARY_ENDPOINTS = ALL_ENDPOINTS;
 
 // Per-event detail endpoint patterns
@@ -455,7 +476,11 @@ async function fetch(_browser, _options) {
   const rejectedByStatus = {};
   const statusTypeCounts = {};
 
-  for (const ep of PRIMARY_ENDPOINTS) {
+  const scanMode = (_options && _options.fullScan) ? 'full' : 'fast';
+  const scanEndpoints = scanMode === 'full' ? PRIMARY_ENDPOINTS : LIVE_FAST_ENDPOINTS;
+  console.log(`[espn-global] scanMode=${scanMode} endpoints=${scanEndpoints.length}`);
+
+  for (const ep of scanEndpoints) {
     try {
       const r = await probe(ep, { fetchStats:true, acceptScheduled:false });
       audits.push({
@@ -487,7 +512,8 @@ async function fetch(_browser, _options) {
   const deduped = dedupeMatches(allMatches);
   const qualityTiers = deduped.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{});
   const globalAudit = {
-    endpointsTried: PRIMARY_ENDPOINTS.length,
+    scanMode,
+    endpointsTried: scanEndpoints.length,
     workingEndpoints,
     failedEndpoints,
     liveAcceptedCount: deduped.length,
