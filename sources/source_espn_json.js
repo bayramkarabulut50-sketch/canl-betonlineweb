@@ -11,35 +11,24 @@ const { createHttpClient } = require('../http-client');
 const { safeNum, safeStr, normalizeMatches } = require('../normalizer');
 
 const LEAGUE_SLUGS = [
-  // ESPN public JSON coverage — no API key, no HTML scraping.
-  // Invalid/empty slugs fail gracefully and are visible in /audit.
   'all',
 
   // England
   'eng.1','eng.2','eng.3','eng.4','eng.5',
-  // Spain
-  'esp.1','esp.2',
-  // Germany
-  'ger.1','ger.2',
-  // Italy
-  'ita.1','ita.2',
-  // France / Netherlands / Portugal / Belgium / Scotland / Turkey
-  'fra.1','fra.2','ned.1','por.1','bel.1','sco.1','tur.1',
-  // Nordics / Central-East Europe
-  'swe.1','nor.1','den.1','fin.1','pol.1','aut.1','sui.1',
-  'cze.1','gre.1','aut.1',  // cro/ser/rom/bul/ukr removed — HTTP 400 on Render
-
+  // Spain / Germany / Italy / France
+  'esp.1','esp.2','ger.1','ger.2','ita.1','ita.2','fra.1','fra.2',
+  // Europe no-key ESPN coverage
+  'ned.1','por.1','bel.1','sco.1','tur.1','swe.1','nor.1','den.1','fin.1',
+  'aut.1','sui.1','cze.1','gre.1',
   // UEFA / international
   'uefa.champions','uefa.europa','uefa.europa.conf','uefa.nations',
   'fifa.world','fifa.friendly','fifa.worldq','uefa.euro',
-
   // North America
   'usa.1','usa.nwsl','usa.usl.1','usa.open','mex.1','mex.2',
   // South America
   'bra.1','bra.2','arg.1','arg.2','col.1','chi.1','per.1','uru.1','ecu.1','par.1',
   'conmebol.libertadores','conmebol.sudamericana',
-
-  // Asia / Oceania / Africa common slugs
+  // Asia / Oceania / Africa
   'ind.1','aus.1','jpn.1','jpn.2','kor.1','chn.1','ksa.1','qat.1',
   'idn.1','tha.1','mys.1','zaf.1','egy.1','mar.1'
 ];
@@ -379,40 +368,53 @@ async function fetch(_browser, _options) {
   const fetchedAt = Date.now();
   const audits = [];
   let allMatches = [];
-  let okEndpoints = 0;
+  let workingEndpoints = 0;
   let failedEndpoints = 0;
+  let detailFetchFailures = 0;
+  const rejectedByStatus = {};
 
   for (const ep of PRIMARY_ENDPOINTS) {
-    const r = await probe(ep, { fetchStats:true, acceptScheduled:false });
-    audits.push({
-      endpoint:r.endpoint,
-      slug:r.slug,
-      status:r.status,
-      rawEventCount:r.rawEventCount || 0,
-      parsedMatches:r.parsedMatches || 0,
-      acceptedEventCount:r.acceptedEventCount || 0,
-      failReason:r.failReason,
-      discoveredStatusTypes:r.discoveredStatusTypes || [],
-      rejectedReasons:r.rejectedReasons || []
-    });
+    try {
+      const r = await probe(ep, { fetchStats:true, acceptScheduled:false });
+      audits.push({
+        endpoint:r.endpoint,
+        slug:r.slug,
+        status:r.status,
+        rawEventCount:r.rawEventCount || 0,
+        parsedMatches:r.parsedMatches || 0,
+        acceptedEventCount:r.acceptedEventCount || 0,
+        failReason:r.failReason,
+        discoveredStatusTypes:r.discoveredStatusTypes || [],
+        rejectedReasons:r.rejectedReasons || []
+      });
 
-    if (r.status === 200) okEndpoints++; else failedEndpoints++;
-    if (r.parsedMatches > 0) allMatches.push(...r.matches);
+      if (r.status === 200) workingEndpoints++; else failedEndpoints++;
+      for (const rr of (r.rejectedReasons || [])) rejectedByStatus[rr] = (rejectedByStatus[rr] || 0) + 1;
+      for (const d of (r.espnDetailsDebug || [])) if (d && d.failReason) detailFetchFailures++;
+      if (r.parsedMatches > 0) allMatches.push(...(r.matches || []));
 
-    console.log(`[espn-global] ${r.slug || ep} → status=${r.status} raw=${r.rawEventCount||0} parsed=${r.parsedMatches||0} reason=${r.failReason}`);
+      console.log(`[espn-global] ${r.slug || ep} → status=${r.status} raw=${r.rawEventCount||0} parsed=${r.parsedMatches||0} reason=${r.failReason}`);
+    } catch (err) {
+      failedEndpoints++;
+      audits.push({ endpoint:ep, status:null, parsedMatches:0, failReason:'ENDPOINT_EXCEPTION', error:String(err && err.message || err) });
+      console.log(`[espn-global] endpoint exception ${ep}`, err && err.message || err);
+    }
   }
 
   const deduped = dedupeMatches(allMatches);
   const qualityTiers = deduped.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{});
-  const auditSummary = {
+  const globalAudit = {
     endpointsTried: PRIMARY_ENDPOINTS.length,
-    endpoints200: okEndpoints,
-    endpointsFailed: failedEndpoints,
+    workingEndpoints,
+    failedEndpoints,
+    liveAcceptedCount: deduped.length,
     rawEventsTotal: audits.reduce((a,x)=>a+(x.rawEventCount||0),0),
     parsedBeforeDedupe: allMatches.length,
     parsedAfterDedupe: deduped.length,
+    rejectedByStatus,
+    detailFetchFailures,
     qualityTiers,
-    topEndpoints: audits.filter(x=>x.parsedMatches>0).sort((a,b)=>b.parsedMatches-a.parsedMatches).slice(0,10),
+    topEndpoints: audits.filter(x=>x.parsedMatches>0).sort((a,b)=>(b.parsedMatches||0)-(a.parsedMatches||0)).slice(0,10),
     sampledFailures: audits.filter(x=>!x.parsedMatches).slice(0,12)
   };
 
@@ -423,8 +425,8 @@ async function fetch(_browser, _options) {
       matches:deduped,
       error:null,
       fetchedAt,
-      _globalAudit:auditSummary,
-      _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:deduped.length, matches:deduped, failReason:'OK_PARSED', auditSummary }
+      _globalAudit:globalAudit,
+      _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:deduped.length, matches:deduped, failReason:'OK_PARSED', auditSummary:globalAudit }
     };
   }
 
@@ -434,8 +436,8 @@ async function fetch(_browser, _options) {
     matches:[],
     error:'NO_LIVE_MATCHES_FROM_ESPN_GLOBAL_SCAN',
     fetchedAt,
-    _globalAudit:auditSummary,
-    _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:0, matches:[], failReason:'NO_EVENTS_FOUND', auditSummary }
+    _globalAudit:globalAudit,
+    _auditResult:{ provider, source:'espn', endpoint:'GLOBAL_AGGREGATION', status:200, parsedMatches:0, matches:[], failReason:'NO_EVENTS_FOUND', auditSummary:globalAudit }
   };
 }
 
