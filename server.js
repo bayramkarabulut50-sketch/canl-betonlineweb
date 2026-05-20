@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.16-rolling-date-window-fix
+ * server.js — CanliBet Scraper Service v11.17-scraper-data-network-flashscore
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -24,6 +24,7 @@ const ENABLE_FOTMOB     = process.env.ENABLE_FOTMOB_JSON_SOURCE    !== 'false'; 
 const ENABLE_AISCORE    = process.env.ENABLE_AISCORE_JSON_SOURCE   !== 'false'; // default on
 const ENABLE_THESPORTSDB = process.env.ENABLE_THESPORTSDB_JSON_SOURCE !== 'false'; // default on
 const ENABLE_OPENLIGADB  = process.env.ENABLE_OPENLIGADB_JSON_SOURCE  !== 'false'; // default on
+const ENABLE_FLASHSCORE  = process.env.ENABLE_FLASHSCORE_FEED_SOURCE  !== 'false'; // default on, public x-feed scraper
 // v11.01: production safety — never publish demo/mock matches unless explicitly disabled.
 const DISABLE_MOCK_FALLBACK = String(process.env.DISABLE_MOCK_FALLBACK || 'true').toLowerCase() === 'true';
 
@@ -54,15 +55,17 @@ const fotmobMod   = require('./sources/source_fotmob_json');
 const aiscoreMod  = require('./sources/source_aiscore_json');
 const thesportsdbMod = require('./sources/source_thesportsdb_json');
 const openligadbMod  = require('./sources/source_openligadb_json');
+const flashscoreMod  = require('./sources/source_flashscore');
 const mockMod     = require('./sources/source_mock');
 
 // Audit always includes all JSON probes
-AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
+AUDIT_ADAPTERS.push(espnMod, flashscoreMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
 // v11.10: SofaScore intentionally excluded from audit/live by policy.
 
 // Live adapters — v11.11 ESPN-first/no-IP-sensitive coverage.
 // SofaScore removed. Primary live source is ESPN public JSON.
 if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only, primary)'); }
+if (ENABLE_FLASHSCORE) { LIVE_ADAPTERS.push(flashscoreMod); log('Adapter: flashscore_feed (HTTP-only public x-feed)'); }
 // v11.15: API-key providers intentionally removed. Scraper-only policy.
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
 if (ENABLE_OPENLIGADB)  { LIVE_ADAPTERS.push(openligadbMod);  log('Adapter: openligadb_json (HTTP-only)'); }
@@ -204,7 +207,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.15-scraper-only-data-network', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.17-scraper-data-network-flashscore', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -212,6 +215,7 @@ app.get('/health', (_,res) => res.json({
     aiscore_json: ENABLE_AISCORE,
     thesportsdb_json: ENABLE_THESPORTSDB,
     openligadb_json: ENABLE_OPENLIGADB,
+    flashscore_feed: ENABLE_FLASHSCORE,
     sofascore:    false,
     api_key_providers: false,
     mock:         ENABLE_MOCK,

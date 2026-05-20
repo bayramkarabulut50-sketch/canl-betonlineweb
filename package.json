@@ -1,7 +1,7 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "11.7.0",
-  "description": "CanliBet live data scraper backend \u2014 ESPN canonical stats mapping fix",
+  "version": "11.17.0",
+  "description": "CanliBet live scraper backend — ESPN + Flashscore public x-feed coverage",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
