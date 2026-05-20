@@ -142,9 +142,9 @@ function classifyStatus(s) {
 const client = createHttpClient({
   referer:   'https://www.espn.com/soccer/',
   origin:    'https://www.espn.com',
-  minPaceMs: 180,
-  timeoutMs: 6500,
-  maxRetries: 1,
+  minPaceMs: 120,
+  timeoutMs: 4000,   // v11.18: reduced per-endpoint timeout — ESPN scan is parallel with other providers
+  maxRetries: 0,     // no retry — saves time; secondary fallback handles gaps
 });
 
 const ESPN_LIVE = new Set([
@@ -952,9 +952,15 @@ async function fetch(_browser, _options) {
   const envScan = String(process.env.ESPN_LIVE_SCAN_MODE || 'fast').toLowerCase();
   const scanMode = (_options && _options.fullScan) ? 'full' : (envScan === 'full' ? 'full' : 'fast');
   const scanEndpoints = scanMode === 'full' ? PRIMARY_ENDPOINTS : LIVE_FAST_ENDPOINTS;
-  console.log(`[espn] fetch scanMode=${scanMode} endpoints=${scanEndpoints.length}`);
+  const ESPN_SCAN_BUDGET_MS = 22000;  // v11.18: hard cap — parallel with other providers
+  const espnScanStart = Date.now();
+  console.log(`[espn] fetch scanMode=${scanMode} endpoints=${scanEndpoints.length} budget=${ESPN_SCAN_BUDGET_MS}ms`);
 
   for (const endpoint of scanEndpoints) {
+    if (Date.now() - espnScanStart > ESPN_SCAN_BUDGET_MS) {
+      console.log(`[espn] SCAN BUDGET EXCEEDED after ${Date.now()-espnScanStart}ms — stopping primary scan early`);
+      break;
+    }
     let r;
     try {
       r = await probe(endpoint, { acceptScheduled: false, debug: true, fetchStats: true });

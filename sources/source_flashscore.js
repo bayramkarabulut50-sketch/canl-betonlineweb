@@ -200,20 +200,37 @@ async function probe(endpoint) {
 }
 
 async function fetch(_browser, _options = {}) {
+  // v11.18: try ALL mirrors in parallel — collect all results, merge best
   const fetchedAt = Date.now();
-  const audits = [];
-  let best = null;
-  for (const ep of ENDPOINTS) {
-    const r = await probe(ep);
-    audits.push(r);
-    console.log(`[flashscore] ${ep} → status=${r.status} raw=${r.rawEventCount} matches=${r.parsedMatches} reason=${r.failReason}`);
-    if (r.parsedMatches > 0) {
-      // Continue one more mirror only if first hit is tiny? Keep fast: return first useful feed.
-      return { provider, success:true, matches:r.matches, error:null, fetchedAt, _auditResult:r, _globalAudit:{ endpointsTried:audits.length, topEndpoints:audits.filter(a=>a.parsedMatches>0).slice(0,5), sampledFailures:audits.filter(a=>!a.parsedMatches).slice(0,8) } };
-    }
-    if (!best || (r.status === 200 && best.status !== 200)) best = r;
+  const probeAll  = ENDPOINTS.map(ep => probe(ep).catch(e => ({
+    provider, source:'flashscore', endpoint:ep, status:null, parsedMatches:0, matches:[],
+    failReason:'ENDPOINT_EXCEPTION', error:e.message, rawEventCount:0
+  })));
+  const audits = await Promise.all(probeAll);
+
+  for (const r of audits) {
+    console.log(`[flashscore] ${r.endpoint} → status=${r.status} raw=${r.rawEventCount} matches=${r.parsedMatches} reason=${r.failReason}`);
   }
-  return { provider, success:false, matches:[], error:best ? best.failReason : 'all_failed', fetchedAt, _auditResult:best, _globalAudit:{ endpointsTried:audits.length, topEndpoints:audits.filter(a=>a.parsedMatches>0).slice(0,5), sampledFailures:audits.slice(0,8) } };
+
+  // Merge all successful results — dedupe by match_id
+  const allMatches = [];
+  const seen = new Set();
+  for (const r of audits) {
+    for (const m of (r.matches || [])) {
+      const key = m.match_id || (m.match_hometeam_name+'___'+m.match_awayteam_name);
+      if (!seen.has(key)) { seen.add(key); allMatches.push(m); }
+    }
+  }
+
+  const workingAudits = audits.filter(a=>a.parsedMatches>0);
+  const failedAudits  = audits.filter(a=>!a.parsedMatches);
+  const best = workingAudits[0] || audits.find(a=>a.status===200) || audits[0];
+  const globalAudit = { endpointsTried:ENDPOINTS.length, topEndpoints:workingAudits.slice(0,5), sampledFailures:failedAudits.slice(0,8) };
+
+  if (allMatches.length > 0) {
+    return { provider, success:true, matches:allMatches, error:null, fetchedAt, _auditResult:best, _globalAudit:globalAudit };
+  }
+  return { provider, success:false, matches:[], error:best ? best.failReason : 'all_endpoints_blocked', fetchedAt, _auditResult:best, _globalAudit:globalAudit };
 }
 
 module.exports = { fetch, probe, provider, needsPlaywright:false, ENDPOINTS, enabled:true };

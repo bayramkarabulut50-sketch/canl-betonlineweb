@@ -191,15 +191,38 @@ async function probe(endpoint) {
 }
 
 async function fetch(_browser, _options) {
+  // v11.18: parallel date probes
   const fetchedAt = Date.now();
-  let best = null;
-  for (const ep of endpointList()) {
-    const r = await probe(ep);
-    console.log(`[fotmob] ${ep} → status=${r.status} raw=${r.rawEventCount} matches=${r.parsedMatches} reason=${r.failReason}`);
-    if (r.parsedMatches > 0) return { provider, success:true, matches:r.matches, error:null, fetchedAt, _auditResult:r };
-    if (!best || (r.status === 200 && best.status !== 200)) best = r;
+  const eps = endpointList();
+  const probeAll = eps.map(ep => probe(ep).catch(e => ({
+    provider, source:'fotmob', endpoint:ep, status:null, parsedMatches:0, matches:[],
+    failReason:'ENDPOINT_EXCEPTION', error:e.message, rawEventCount:0
+  })));
+  const results = await Promise.all(probeAll);
+
+  for (const r of results) {
+    console.log(`[fotmob] ${r.endpoint} → status=${r.status} raw=${r.rawEventCount} matches=${r.parsedMatches} reason=${r.failReason}`);
   }
-  return { provider, success:false, matches:[], error:best ? best.failReason : 'all_failed', fetchedAt, _auditResult:best };
+
+  // Count blocked vs no-data
+  const blocked = results.filter(r=>r.status===403||r.failReason===FAIL.HTTP_403).length;
+  if (blocked === results.length) {
+    const best = results[0];
+    return { provider, success:false, matches:[], error:'HTTP_403_ALL_BLOCKED', fetchedAt, _auditResult:best };
+  }
+
+  // Merge all successful
+  const allMatches = []; const seen = new Set();
+  for (const r of results) {
+    for (const m of (r.matches||[])) {
+      const key = m.match_id||(m.match_hometeam_name+'___'+m.match_awayteam_name);
+      if (!seen.has(key)){ seen.add(key); allMatches.push(m); }
+    }
+  }
+
+  const best = results.find(r=>r.parsedMatches>0) || results.find(r=>r.status===200) || results[0];
+  if (allMatches.length > 0) return { provider, success:true, matches:allMatches, error:null, fetchedAt, _auditResult:best };
+  return { provider, success:false, matches:[], error:best ? best.failReason : 'no_live_events', fetchedAt, _auditResult:best };
 }
 
 module.exports = { provider, needsPlaywright:false, ENDPOINTS:endpointList(), fetch, probe };
