@@ -1,5 +1,5 @@
 /**
- * source_espn_json.js v11.13-fast-live-scan-fix
+ * source_espn_json.js v11.14-data-network
  *
  * ESPN public JSON — live match extraction + stats endpoint discovery.
  * Secondary endpoints probed per event: summary, statistics, situation.
@@ -66,10 +66,18 @@ const ALL_ENDPOINTS = buildScoreboardEndpoints();
 // v11.12: /live must be fast. ESPN /all/scoreboard usually aggregates the active ESPN soccer board;
 // then we probe a compact set of high-yield slugs. Full 360-endpoint scan stays for /audit only.
 const LIVE_FAST_SLUGS = [
-  'all','aut.1','usa.1','usa.nwsl','mex.1','mex.2','bra.1','bra.2','arg.1','arg.2',
-  'chn.1','jpn.1','kor.1','ksa.1','idn.1','tha.1','mys.1','aus.1','swe.1','nor.1',
-  'eng.1','esp.1','ger.1','ita.1','fra.1','tur.1',
-  'fifa.friendly','club.friendly','conmebol.libertadores','conmebol.sudamericana','uefa.champions','uefa.europa'
+  // Global aggregate first
+  'all',
+  // Europe / major and mid-tier leagues likely to be live on ESPN public JSON
+  'eng.1','eng.2','eng.3','eng.4','eng.5','esp.1','esp.2','ger.1','ger.2','ita.1','ita.2','fra.1','fra.2',
+  'ned.1','por.1','bel.1','sco.1','tur.1','swe.1','nor.1','den.1','fin.1','aut.1','sui.1','cze.1','gre.1',
+  // UEFA / international / cups
+  'uefa.champions','uefa.europa','uefa.europa.conf','uefa.nations','fifa.friendly','club.friendly','fifa.worldq','uefa.euroq',
+  // Americas
+  'usa.1','usa.nwsl','usa.usl.1','usa.open','mex.1','mex.2','bra.1','bra.2','arg.1','arg.2','col.1','chi.1','per.1','uru.1','ecu.1','par.1',
+  'conmebol.libertadores','conmebol.sudamericana','concacaf.champions','concacaf.gold','concacaf.nations.league',
+  // Asia/Oceania/Africa high-yield public ESPN slugs
+  'chn.1','jpn.1','kor.1','ksa.1','idn.1','tha.1','mys.1','aus.1','ind.1','zaf.1','egy.1','mar.1'
 ];
 function buildFastScoreboardEndpoints() {
   const today = yyyymmddUTC(0);
@@ -476,7 +484,8 @@ async function fetch(_browser, _options) {
   const rejectedByStatus = {};
   const statusTypeCounts = {};
 
-  const scanMode = (_options && _options.fullScan) ? 'full' : 'fast';
+  const envScan = String(process.env.ESPN_LIVE_SCAN_MODE || 'fast').toLowerCase();
+  const scanMode = (_options && _options.fullScan) ? 'full' : (envScan === 'full' ? 'full' : 'fast');
   const scanEndpoints = scanMode === 'full' ? PRIMARY_ENDPOINTS : LIVE_FAST_ENDPOINTS;
   console.log(`[espn-global] scanMode=${scanMode} endpoints=${scanEndpoints.length}`);
 
@@ -849,7 +858,8 @@ async function fetch(_browser, _options) {
   }
 
   // v11.13: use compact fast endpoint set for /live. Full 360 scan only when explicitly requested.
-  const scanMode = (_options && _options.fullScan) ? 'full' : 'fast';
+  const envScan = String(process.env.ESPN_LIVE_SCAN_MODE || 'fast').toLowerCase();
+  const scanMode = (_options && _options.fullScan) ? 'full' : (envScan === 'full' ? 'full' : 'fast');
   const scanEndpoints = scanMode === 'full' ? PRIMARY_ENDPOINTS : LIVE_FAST_ENDPOINTS;
   console.log(`[espn] fetch scanMode=${scanMode} endpoints=${scanEndpoints.length}`);
 
