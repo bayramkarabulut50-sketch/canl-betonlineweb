@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.24-calibrated-coverage-signal-pipeline
+ * server.js — CanliBet Scraper Service v11.25-coverage-audit-signal-visibility
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -86,6 +86,51 @@ const _sourceFailReasons   = {};
 
 function isCacheValid() { return _snapshot && Date.now() < _snapshot.expiresAt; }
 
+
+function buildProviderReport(results, live, signalEligible, rejectedProviderCounts) {
+  const report = {};
+  for (const r of (results || [])) {
+    const k = r.provider || 'unknown';
+    report[k] = report[k] || { raw:0, parsed:0, visible:0, signalEligible:0, rejected:0, blocked:false, error:null, statsCoverage:0, lowDataVisible:0 };
+    report[k].raw = r._auditResult?.rawEventCount || 0;
+    report[k].parsed = r._auditResult?.parsedMatches || r.matches?.length || 0;
+    report[k].error = r.success ? null : (r.error || r._auditResult?.failReason || 'unknown');
+    report[k].blocked = !!(report[k].error && String(report[k].error).includes('403'));
+  }
+  for (const m of (live || [])) {
+    const k = m._mergeProvider || m.source || 'unknown';
+    report[k] = report[k] || { raw:0, parsed:0, visible:0, signalEligible:0, rejected:0, blocked:false, error:null, statsCoverage:0, lowDataVisible:0 };
+    report[k].visible += 1;
+    if (m.hasStats) report[k].statsCoverage += 1;
+    else report[k].lowDataVisible += 1;
+  }
+  for (const m of (signalEligible || [])) {
+    const k = m._mergeProvider || m.source || 'unknown';
+    report[k] = report[k] || { raw:0, parsed:0, visible:0, signalEligible:0, rejected:0, blocked:false, error:null, statsCoverage:0, lowDataVisible:0 };
+    report[k].signalEligible += 1;
+  }
+  for (const [k,v] of Object.entries(rejectedProviderCounts || {})) {
+    report[k] = report[k] || { raw:0, parsed:0, visible:0, signalEligible:0, rejected:0, blocked:false, error:null, statsCoverage:0, lowDataVisible:0 };
+    report[k].rejected += v;
+  }
+  return report;
+}
+
+function buildCoverageEstimate(rawTotal, visibleCount, rejectedReasons) {
+  const rejectedTotal = Object.values(rejectedReasons || {}).reduce((a,b)=>a+(Number(b)||0),0);
+  const rejectedRatio = rawTotal ? rejectedTotal / Math.max(rawTotal, 1) : 0;
+  let status = 'normal';
+  if (visibleCount === 0 && rawTotal > 0) status = 'undercount_or_overfilter';
+  else if (visibleCount < 8 && rawTotal > 20) status = 'possible_undercount';
+  else if (visibleCount > 70) status = 'possible_overcount';
+  return {
+    rawTotal, validatedVisible: visibleCount, rejectedTotal,
+    rejectedRatio: Number(rejectedRatio.toFixed(3)),
+    expectedRangeStatus: status,
+    topRejectReasons: Object.entries(rejectedReasons || {}).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([reason,count])=>({reason,count}))
+  };
+}
+
 // ── Fetch cycle ───────────────────────────────────────────────────────────────
 // v11.18: PARALLEL provider fetch — all adapters run simultaneously.
 // ESPN scan can take 20-30s; running it in parallel with Flashscore/FotMob
@@ -143,6 +188,7 @@ async function runFetchCycle() {
   // signalEligibleMatches is exposed in debug and used by frontend for watch/hero.
   let live = layerSplit.visibleLiveMatches
     .filter(m => m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
+  let finalSignalEligible = layerSplit.signalEligibleMatches.filter(m => live.includes(m) || live.some(x => x.match_id === m.match_id));
   let impossibleCountGuard = null;
   if (live.length > 60) {
     impossibleCountGuard = `suspicious_visible_count:${live.length}>60`;
@@ -154,7 +200,12 @@ async function runFetchCycle() {
       .sort((a,b) => (b.hasStats?1:0) - (a.hasStats?1:0) || (b.signalCount||0) - (a.signalCount||0) || (b.validationScore||0) - (a.validationScore||0))
       .slice(0, targetMax);
     log(`[GUARD] after calibrated visible gate: ${live.length} matches`);
+    finalSignalEligible = layerSplit.signalEligibleMatches.filter(m => live.some(x => x.match_id === m.match_id));
   }
+  const providerReport = buildProviderReport(results, live, finalSignalEligible, layerSplit.rejectedProviderCounts);
+  const coverageEstimate = buildCoverageEstimate(merged.length + ((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0), live.length, layerSplit.rejectedReasons);
+  const visibleVsSignalEligibleComparison = { visible: live.length, signalEligible: finalSignalEligible.length, lowDataVisible: layerSplit.lowDataVisibleCount, signalStarvation: live.length > 8 && finalSignalEligible.length === 0 };
+
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
     sourceSuccessCounts:counts, liveMatches:live.length,
@@ -163,11 +214,12 @@ async function runFetchCycle() {
     signalCoverage:live.filter(m=>m.signalCount > 0).length,
     actionableSignals:live.reduce((a,m)=>a+(m.signalCount||0),0),
     visibleLiveMatchesCount: live.length,
-    signalEligibleMatchesCount: layerSplit.signalEligibleMatches.length,
+    signalEligibleMatchesCount: finalSignalEligible.length,
     visibleProviderCounts: layerSplit.visibleProviderCounts,
-    signalEligibleProviderCounts: layerSplit.signalEligibleProviderCounts,
-    rejectedProviderCounts: {},
+    signalEligibleProviderCounts: finalSignalEligible.reduce((acc,m)=>{ const k=m._mergeProvider||m.source||'unknown'; acc[k]=(acc[k]||0)+1; return acc; },{}),
+    rejectedProviderCounts: layerSplit.rejectedProviderCounts || {},
     rejectedReasons: layerSplit.rejectedReasons,
+    rejectedSamples: layerSplit.rejectedSamples || [],
     duplicateRemoved: (mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0,
     qualityRejected: layerSplit.rejectedReasons.quality_low || 0,
     youthRejected: layerSplit.rejectedReasons.excluded_competition || 0,
@@ -196,6 +248,10 @@ async function runFetchCycle() {
     dedupeBefore: merged.length,
     dedupeAfter:  live.length,
     topProviders: results.filter(r=>r.success&&r.matches?.length>0).map(r=>({ provider:r.provider, count:r.matches.length })),
+    providerReport,
+    coverageEstimate,
+    visibleVsSignalEligibleComparison,
+    signalStarvationDiagnostics: visibleVsSignalEligibleComparison.signalStarvation ? { message:'visible live exists but signal layer is empty', gates:['stats','pressure','tempo','confidence','odds'] } : null,
     canonicalQuality: mergeAdapterResults.lastDebug || {},
     pipelineHealth: Object.assign({}, layerSplit.health, {
       duplicateRatio: merged.length ? Number((((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0) / Math.max(merged.length + ((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0),1)).toFixed(3)) : 0
@@ -263,7 +319,15 @@ async function runAudit() {
     .slice(0,3)
     .map(s => s.source || s.provider);
 
-  _lastAuditResult = { testedAt, sources, bestCandidates };
+  const auditSummary = {
+    rawTotal: sources.reduce((a,s)=>a+(Number(s.rawEventCount)||0),0),
+    parsedTotal: sources.reduce((a,s)=>a+(Number(s.parsedMatches)||0),0),
+    acceptedTotal: sources.reduce((a,s)=>a+(Number(s.acceptedEventCount)||0),0),
+    providerBreakdown: sources.reduce((acc,s)=>{ const k=s.provider||s.source||'unknown'; acc[k]=acc[k]||{raw:0,parsed:0,accepted:0,failReasons:{}}; acc[k].raw += Number(s.rawEventCount)||0; acc[k].parsed += Number(s.parsedMatches)||0; acc[k].accepted += Number(s.acceptedEventCount)||0; const fr=s.failReason||'OK'; acc[k].failReasons[fr]=(acc[k].failReasons[fr]||0)+1; return acc; },{}),
+    topRejectReasons: sources.reduce((acc,s)=>{ (s.rejectedReasons?Object.entries(s.rejectedReasons):[]).forEach(([r,c])=>{ acc[r]=(acc[r]||0)+Number(c||0); }); return acc; },{})
+  };
+
+  _lastAuditResult = { testedAt, sources, bestCandidates, summary:auditSummary };
   return _lastAuditResult;
 }
 
@@ -274,7 +338,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.24-calibrated-coverage-signal-pipeline', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.25-coverage-audit-signal-visibility', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -291,6 +355,7 @@ app.get('/health', (_,res) => res.json({
   lastAuditSummary:_lastAuditResult ? {
     testedAt:       _lastAuditResult.testedAt,
     bestCandidates: _lastAuditResult.bestCandidates,
+    summary: _lastAuditResult.summary || null,
     sourcesCount:   _lastAuditResult.sources.length,
   } : null,
   lastStatsAuditSummary:_lastStatsAuditResult ? {
@@ -337,6 +402,12 @@ app.get('/live', async (req,res) => {
       sourceCounts:           s.meta.sourceCounts           || {},
       canonicalQuality:       s.meta.canonicalQuality       || {},
       validationRejectDebug:  s.meta.validationRejectDebug  || {},
+      summary: { rawTotal:s.meta.coverageEstimate?.rawTotal||0, visibleLive:s.meta.visibleLiveMatchesCount||0, signalEligible:s.meta.signalEligibleMatchesCount||0, rejectedTotal:s.meta.coverageEstimate?.rejectedTotal||0, duplicateRemoved:s.meta.duplicateRemoved||0, coverageHealth:s.meta.coverageEstimate?.expectedRangeStatus||'unknown', signalHealth:(s.meta.visibleVsSignalEligibleComparison?.signalStarvation?'starvation':'ok') },
+      providerReport: s.meta.providerReport || {},
+      coverageEstimate: s.meta.coverageEstimate || {},
+      visibleVsSignalEligibleComparison: s.meta.visibleVsSignalEligibleComparison || {},
+      rejectedSamples: s.meta.rejectedSamples || [],
+      pipelineHealth: s.meta.pipelineHealth || {},
     }});
   } catch(err) {
     log('[ERROR] /live', { error:err.message });
@@ -394,7 +465,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.24-calibrated-coverage-signal-pipeline listening on :${PORT}`);
+  log(`CanliBet scraper service v11.25-coverage-audit-signal-visibility listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 

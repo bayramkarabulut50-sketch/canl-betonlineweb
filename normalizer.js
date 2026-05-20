@@ -1,9 +1,9 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.24
+ * normalizer.js — CanliBet Scraper Service v11.25
  *
  * Converts any source adapter output → canonical match format.
- * v11.24: calibrated coverage/signal pipeline, stricter Flashscore noise control,
- * dynamic visible caps and explainable dual-layer validation.
+ * v11.25: coverage audit + signal visibility tuning, provider reports,
+ * dual-layer visible/signal validation and explainable reject breakdowns.
  */
 'use strict';
 
@@ -319,6 +319,8 @@ function splitLiveLayers(matches) {
   const signalEligibleMatches = [];
   const rejectedMatches = [];
   const rejectedReasons = {};
+  const rejectedSamples = [];
+  const rejectedProviderCounts = {};
   const providerCounts = {};
   const signalEligibleProviderCounts = {};
   const lowDataVisible = [];
@@ -329,6 +331,9 @@ function splitLiveLayers(matches) {
     if (!m || m.match_live !== '1' || (m.validationScore || 0) < 35) {
       rejectedMatches.push(m);
       rejectedReasons[rejectReason] = (rejectedReasons[rejectReason] || 0) + 1;
+      const rp = (m && (m._mergeProvider || m.source)) || 'unknown';
+      rejectedProviderCounts[rp] = (rejectedProviderCounts[rp] || 0) + 1;
+      if (rejectedSamples.length < 30 && m) rejectedSamples.push({ id:m.match_id, home:m.match_hometeam_name, away:m.match_awayteam_name, source:rp, score:m.validationScore, tier:m.validationTier, reason:rejectReason, rawReasons:m.validationReasons });
       continue;
     }
     visibleLiveMatches.push(m);
@@ -351,6 +356,8 @@ function splitLiveLayers(matches) {
     signalEligibleMatches,
     rejectedMatches,
     rejectedReasons,
+    rejectedSamples,
+    rejectedProviderCounts,
     visibleProviderCounts: providerCounts,
     signalEligibleProviderCounts,
     lowDataVisibleCount: lowDataVisible.length,
@@ -394,7 +401,7 @@ function computeValidation(m) {
   if (isFlashscoreSource(m)) {
     score += 3; reasons.push('flashscore_feed');
 
-    // v11.24: Flashscore/Livesport x-feed gives great coverage but can include
+    // v11.25: Flashscore/Livesport x-feed gives great coverage but can include
     // hundreds of low-value/noisy rows. Basic rows are visible only when they
     // have clear senior/pro competition cues; otherwise they are rejected before
     // they can inflate the dashboard to 95/153/666.
@@ -662,18 +669,27 @@ function mergeAdapterResults(adapterResults) {
     }
   }
 
-  let merged = [...byKey.values()].filter(m => (m.validationScore || 0) >= 35 && m.match_live === '1');
+  let merged = [...byKey.values()].filter(m => {
+    if (!m || m.match_live !== '1') return false;
+    const score = m.validationScore || 0;
+    if (score >= 35) return true;
+    // v11.25: Coverage rescue for real senior low-data rows. This prevents the
+    // visible layer from undercounting when public feeds lack stats, while still
+    // keeping youth/friendly/noisy rows out.
+    if (score >= 30 && flashscoreSeniorVisibleAllowed(m) && hasRealLiveClock(m)) return true;
+    return false;
+  });
 
-  // v11.24: Dynamic visible cap. A high raw count from a basic x-feed usually
+  // v11.25: Dynamic visible cap. A high raw count from a basic x-feed usually
   // means noisy global rows, not 150 truly useful senior betting matches. Keep
   // ESPN/stats-rich matches first, then the best senior Flashscore discovery rows.
   const statsRichCount = merged.filter(m => m.hasStats || (m.signalCount || 0) > 0 || m.source === 'espn' || m.source === 'espn_json').length;
   const basicFlashCount = merged.filter(m => isFlashscoreBasicRow(m)).length;
   let dynamicMaxVisible = 60;
   if (merged.length > 80 && basicFlashCount / Math.max(merged.length,1) > 0.55) {
-    dynamicMaxVisible = Math.max(24, Math.min(45, statsRichCount * 4 + 20));
+    dynamicMaxVisible = Math.max(28, Math.min(55, statsRichCount * 5 + 24));
   }
-  if (merged.length > 140) dynamicMaxVisible = Math.min(dynamicMaxVisible, 38);
+  if (merged.length > 160) dynamicMaxVisible = Math.min(dynamicMaxVisible, 48);
 
   let capped = 0;
   if (merged.length > dynamicMaxVisible) {
@@ -692,6 +708,8 @@ function mergeAdapterResults(adapterResults) {
     duplicateRemoved: Math.max(0, rawIn - merged.length),
     duplicateSamples: duplicateReport.slice(0,20),
     rejectedReasons: layerDebug.rejectedReasons,
+    rejectedProviderCounts: layerDebug.rejectedProviderCounts,
+    rejectedSamples: layerDebug.rejectedSamples,
     lowDataVisibleCount: layerDebug.lowDataVisibleCount,
     qualityTiers: merged.reduce((a,m)=>{ const k=m.validationTier||'UNKNOWN'; a[k]=(a[k]||0)+1; return a; },{}),
     providerCounts: merged.reduce((a,m)=>{ const k=m._mergeProvider||m.source||'unknown'; a[k]=(a[k]||0)+1; return a; },{}),
