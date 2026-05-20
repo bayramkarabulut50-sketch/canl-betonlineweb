@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.17-scraper-data-network-flashscore
+ * server.js — CanliBet Scraper Service v11.21-quality-signal-stability
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -138,13 +138,12 @@ async function runFetchCycle() {
   }
 
   const merged = mergeAdapterResults(results);
-  // v11.19: impossible count guard on merged result before serving
+  // v11.20: impossible count guard on merged result before serving
   let live = merged.filter(m => m.match_live === '1' && m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
-  if (live.length > 200) {
-    log(`[GUARD] impossible live count ${live.length} — quarantining all provider results`);
-    // Take only matches with explicit minute 1-130 as safety net
-    live = live.filter(m => m.minute != null && m.minute > 0 && m.minute < 130);
-    log(`[GUARD] after strict minute filter: ${live.length} matches`);
+  if (live.length > 120) {
+    log(`[GUARD] suspicious live count ${live.length} — applying HIGH/MEDIUM validation gate`);
+    live = live.filter(m => (m.validationScore || 0) >= 55 && m.minute != null && m.minute > 0 && m.minute < 130);
+    log(`[GUARD] after quality gate: ${live.length} matches`);
   }
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
@@ -171,6 +170,8 @@ async function runFetchCycle() {
     dedupeBefore: merged.length,
     dedupeAfter:  live.length,
     topProviders: results.filter(r=>r.success&&r.matches?.length>0).map(r=>({ provider:r.provider, count:r.matches.length })),
+    canonicalQuality: mergeAdapterResults.lastDebug || {},
+    validationRejectDebug: require('./normalizer').normalizeMatches.lastDebug || {},
     sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
                        results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null,
     dataNetwork: {
@@ -244,7 +245,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.17-scraper-data-network-flashscore', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.21-quality-signal-stability', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -360,7 +361,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.19-stable-architecture listening on :${PORT}`);
+  log(`CanliBet scraper service v11.21-quality-signal-stability listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
