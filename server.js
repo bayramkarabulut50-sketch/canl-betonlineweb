@@ -87,33 +87,54 @@ const _sourceFailReasons   = {};
 function isCacheValid() { return _snapshot && Date.now() < _snapshot.expiresAt; }
 
 // ── Fetch cycle ───────────────────────────────────────────────────────────────
+// v11.18: PARALLEL provider fetch — all adapters run simultaneously.
+// ESPN scan can take 20-30s; running it in parallel with Flashscore/FotMob
+// means total time = slowest provider, not sum of all providers.
 async function runFetchCycle() {
   const t0 = Date.now();
-  const results = [], tried = [], counts = {};
+  const tried = [], counts = {};
 
-  for (const adapter of LIVE_ADAPTERS) {
+  const adapterTasks = LIVE_ADAPTERS.map(async (adapter) => {
     const name = adapter.provider;
 
-    // v11.00: mock is only a development fallback. Do not call it when disabled.
     if (name === 'mock' && DISABLE_MOCK_FALLBACK) {
       log('[mock] skipped — DISABLE_MOCK_FALLBACK=true');
       tried.push(name + ':skipped');
       counts[name] = 0;
-      continue;
+      return { provider:name, success:false, matches:[], error:'mock_skipped', fetchedAt:Date.now(), _skipped:true };
     }
 
     const t1 = Date.now();
     let r;
     try { r = await adapter.fetch(null, { cache:_snapshot, fullScan:false }); }
-    catch(err) { r = { provider:name, success:false, matches:[], error:err.message, fetchedAt:Date.now() }; }
+    catch(err) {
+      r = { provider:name, success:false, matches:[], error:err.message, fetchedAt:Date.now() };
+    }
     const ms = Date.now()-t1;
     log(`[${name}] done`, { ok:r.success, n:r.matches?.length??0, ms, err:r.error??null });
-    results.push(r); tried.push(name); counts[name]=r.success?(r.matches?.length??0):0;
-
+    tried.push(name);
+    counts[name] = r.success ? (r.matches?.length??0) : 0;
     _sourceSuccessCounts[name] = (_sourceSuccessCounts[name]||0) + (r.success ? 1 : 0);
     if (!r.success) _sourceFailReasons[name] = r.error || 'unknown';
+    return r;
+  });
 
-    // v11.10: continue through enabled public JSON sources, but SofaScore/IP-sensitive sources are excluded.
+  // Run all providers in parallel — winner-takes-all on speed, all results merged
+  const results = await Promise.all(adapterTasks);
+
+  // Synthesize per-provider counts for debug
+  const rawProviderCounts     = {};
+  const parsedProviderCounts  = {};
+  const acceptedProviderCounts = {};
+  const blockedProviderCounts  = {};
+  const providerErrors         = {};
+  for (const r of results) {
+    const n = r.provider;
+    rawProviderCounts[n]      = r._auditResult?.rawEventCount || 0;
+    parsedProviderCounts[n]   = r._auditResult?.parsedMatches || r.matches?.length || 0;
+    acceptedProviderCounts[n] = r.success ? (r.matches?.length||0) : 0;
+    if (r.error === 'HTTP_403' || (r._auditResult?.failReason||'').includes('403')) blockedProviderCounts[n] = 'HTTP_403';
+    if (!r.success && r.error) providerErrors[n] = r.error;
   }
 
   const merged = mergeAdapterResults(results);
@@ -134,6 +155,15 @@ async function runFetchCycle() {
     mockSuppressed: DISABLE_MOCK_FALLBACK,
     note: live.length ? 'real_live_matches_found_multi_source' : 'no_real_live_matches_from_current_sources',
     scraperOnlyNote: 'No API-key provider connections are used. ESPN/FotMob/OpenLigaDB/TheSportsDB/AIScore are public scraper/HTTP probes only; SofaScore/IP-sensitive sources are excluded.',
+    // v11.18: per-provider breakdown in /live debug
+    rawProviderCounts,
+    parsedProviderCounts,
+    acceptedProviderCounts,
+    blockedProviderCounts,
+    providerErrors,
+    dedupeBefore: merged.length,
+    dedupeAfter:  live.length,
+    topProviders: results.filter(r=>r.success&&r.matches?.length>0).map(r=>({ provider:r.provider, count:r.matches.length })),
     sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
                        results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null,
     dataNetwork: {
@@ -257,6 +287,15 @@ app.get('/live', async (req,res) => {
       cacheHit:s.meta.cacheHit, lastFetchAt:s.meta.lastFetchAt, durationMs:s.meta.durationMs,
       // v11.08: ESPN global scan audit — visible at /live?force=true
       sourceGlobalAudit: s.meta.sourceGlobalAudit || null,
+      // v11.18: per-provider breakdown
+      rawProviderCounts:      s.meta.rawProviderCounts      || {},
+      parsedProviderCounts:   s.meta.parsedProviderCounts   || {},
+      acceptedProviderCounts: s.meta.acceptedProviderCounts || {},
+      blockedProviderCounts:  s.meta.blockedProviderCounts  || {},
+      providerErrors:         s.meta.providerErrors         || {},
+      dedupeBefore:           s.meta.dedupeBefore           || 0,
+      dedupeAfter:            s.meta.dedupeAfter            || 0,
+      topProviders:           s.meta.topProviders           || [],
     }});
   } catch(err) {
     log('[ERROR] /live', { error:err.message });
@@ -314,7 +353,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.15-scraper-only-data-network listening on :${PORT}`);
+  log(`CanliBet scraper service v11.18-scraper-network-real-live-fix listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
