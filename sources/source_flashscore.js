@@ -1,5 +1,5 @@
 /**
- * source_flashscore.js — CanliBet Scraper Service v11.17
+ * source_flashscore.js — CanliBet Scraper Service v11.21
  *
  * Public HTTP scraper for Flashscore/Livesport x-feed.
  * No API key. No browser automation. No proxy/IP rotation. No CAPTCHA bypass.
@@ -76,12 +76,14 @@ function parseRecord(rec) {
 }
 
 function parseMinuteFromRecord(o) {
-  const candidates = [o.AM, o.AO, o.BX, o.BC, o.AV, o.BE, o.AC, o.AB, o.AD];
+  // IMPORTANT: AB/AC/AD are often flags/status markers in x-feed, not minutes.
+  // Reading them as minutes caused the 666-live bug (many scheduled rows became minute=1).
+  const candidates = [o.AM, o.AO, o.BX, o.BC, o.AV, o.BE];
   for (const c of candidates) {
     if (c == null) continue;
-    const s = String(c);
-    // Prefer explicit minutes like 39, 45+2, 90+3.
-    const m = s.match(/(\d{1,3})(?:\+\d{1,2})?/);
+    const s = String(c).trim();
+    // Accept only explicit clock-like values: 1..130, 45+2, 90+3, or 12'.
+    const m = s.match(/^(\d{1,3})(?:\+\d{1,2})?'?$/);
     if (m) {
       const n = parseInt(m[1], 10);
       if (!isNaN(n) && n > 0 && n <= 130) return n;
@@ -99,18 +101,14 @@ function statusText(o) {
 }
 
 function isLiveRecord(o) {
-  // Flashscore feed variants use different short fields. These heuristics are
-  // intentionally inclusive for in-play records but reject obvious finished rows.
   const st = statusText(o);
   const minute = parseMinuteFromRecord(o);
-  const hasScore = o.AG != null || o.AH != null || o.BA != null || o.BB != null;
 
-  if (/\b(ft|finished|after pen|aet|walkover|postponed|cancelled|canceled|abandoned)\b/.test(st)) return false;
-  if (/\b(ht|half|1st|2nd|live|in ?play|delayed|suspended)\b/.test(st)) return true;
+  if (/\b(ft|finished|after pen|aet|walkover|postponed|cancelled|canceled|abandoned|scheduled|not started)\b/.test(st)) return false;
+  if (/\b(ht|half\s*time|1st half|2nd half|live|in ?play|delayed|suspended)\b/.test(st)) return true;
   if (minute != null && minute > 0 && minute <= 130) return true;
 
-  // Feed f_1_-1_3 often contains live only; AB=1/AC=1 are common in-play flags.
-  if (hasScore && (o.AB === '1' || o.AC === '1' || o.AS === '1' || o.AZ === '1')) return true;
+  // Never use AB/AC/AD/AS/AZ flags or score alone as live proof.
   return false;
 }
 
@@ -126,7 +124,8 @@ function normFlashRecord(o, leagueName) {
   const minute = parseMinuteFromRecord(o);
   const hg = safeNum(o.AG ?? o.BA ?? o.homeScore, 0);
   const ag = safeNum(o.AH ?? o.BB ?? o.awayScore, 0);
-  const rawStatus = statusText(o).includes('ht') ? 'HT' : (minute ? String(minute) : 'LIVE');
+  const rawStatusText = statusText(o);
+  const rawStatus = rawStatusText.includes('ht') ? 'HT' : (minute ? String(minute) : (rawStatusText.includes('live') ? 'LIVE' : 'UNKNOWN'));
 
   return {
     match_id: id,
