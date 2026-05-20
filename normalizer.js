@@ -1,9 +1,9 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.23
+ * normalizer.js — CanliBet Scraper Service v11.24
  *
  * Converts any source adapter output → canonical match format.
- * v11.23: production dual-layer visible/signal pipeline,
- * dynamic quality thresholds, provider confidence scoring.
+ * v11.24: calibrated coverage/signal pipeline, stricter Flashscore noise control,
+ * dynamic visible caps and explainable dual-layer validation.
  */
 'use strict';
 
@@ -201,6 +201,9 @@ const EXCLUDED_COMPETITION_RE = new RegExp([
   'friendly','friendlies','club friendly','international friendly','pre-season','preseason',
   'virtual','esoccer','e-soccer','cyber','simulated','simulation','fifa\\s?e',
   'school','college','university','student',
+  'state league','state league 1','state league 2','regional league','county league','amateur league',
+  'npl queensland','npl victoria','npl western australia','npl nsw','npl south australia',
+  'play offs','play-off','playoffs','relegation group','promotion group',
   'ю17','ю19','молод','младеж','юнош'
 ].join('|'), 'i');
 
@@ -226,6 +229,33 @@ function isFlashscoreSource(m) {
 function isTrustedFlashCompetition(m) {
   const txt = [m.league_name, m.competition, m.sourceLeague].map(v=>String(v||'')).join(' ');
   return TRUSTED_FLASH_COMPETITION_RE.test(txt);
+}
+
+
+const NOISY_FLASH_COMPETITION_RE = new RegExp([
+  'state league','npl queensland','npl victoria','npl western australia','npl nsw','npl south australia',
+  'regional','county','amateur','lower league','reserve','reserves','youth','u17','u18','u19','u20','u21','u23',
+  'women','friendly','play offs','play-off','qualification - play off','relegation','promotion',
+  'bundesliga - conference league play offs','conference league play offs'
+].join('|'), 'i');
+
+function isNoisyFlashCompetition(m) {
+  const txt = [m.league_name, m.competition, m.sourceLeague].map(v=>String(v||'')).join(' ');
+  return NOISY_FLASH_COMPETITION_RE.test(txt);
+}
+
+function isFlashscoreBasicRow(m) {
+  return isFlashscoreSource(m) && !m.hasStats && !m.hasOdds;
+}
+
+function flashscoreSeniorVisibleAllowed(m) {
+  if (!isFlashscoreSource(m)) return true;
+  if (!isFlashscoreBasicRow(m)) return true;
+  if (isNoisyFlashCompetition(m)) return false;
+  if (hasExcludedCompetitionText(m)) return false;
+  if (hasMostlyNonLatinText(m)) return false;
+  // For basic x-feed rows, require either a trusted named league or a broad senior/pro cue.
+  return isTrustedFlashCompetition(m) || hasSeniorProfessionalSignal(m);
 }
 
 function hasMostlyNonLatinText(m) {
@@ -271,6 +301,7 @@ function validationReasonBucket(reasons) {
   if (rs.some(r => /scheduled/i.test(r))) return 'scheduled';
   if (rs.some(r => /invalid_team/i.test(r))) return 'invalid_team_names';
   if (rs.some(r => /missing_minute|invalid_minute|no_real_clock/i.test(r))) return 'missing_or_invalid_minute';
+  if (rs.some(r => /flashscore_untrusted_basic|flashscore_noisy|flashscore_non_latin/i.test(r))) return 'flashscore_quality_rejected';
   if (rs.some(r => /quality_low|no_stats/i.test(r))) return 'quality_low';
   return rs[0] || 'unknown';
 }
@@ -361,25 +392,36 @@ function computeValidation(m) {
   if (m.source === 'espn' || m.source === 'espn_json') { score += 18; reasons.push('espn_verified'); }
   if (hasSeniorProfessionalSignal(m)) { score += 10; reasons.push('senior_professional_signal'); }
   if (isFlashscoreSource(m)) {
-    score += 3; reasons.push('flashscore_basic');
+    score += 3; reasons.push('flashscore_feed');
 
-    // Flashscore x-feed is excellent for discovery but very noisy. Keep only
-    // betting-grade senior/pro competitions unless a row has real stats/odds.
-    if (!m.hasStats && !m.hasOdds) { score -= 8; reasons.push('flashscore_basic_no_stats_odds'); }
-    if (isTrustedFlashCompetition(m)) { score += 25; reasons.push('trusted_flash_competition'); }
-    else { score -= 1; reasons.push('flashscore_untrusted_competition'); }
-    if (hasMostlyNonLatinText(m)) { score -= 8; reasons.push('flashscore_non_latin_feed'); }
+    // v11.24: Flashscore/Livesport x-feed gives great coverage but can include
+    // hundreds of low-value/noisy rows. Basic rows are visible only when they
+    // have clear senior/pro competition cues; otherwise they are rejected before
+    // they can inflate the dashboard to 95/153/666.
+    if (isFlashscoreBasicRow(m)) {
+      reasons.push('flashscore_basic_no_stats_odds');
+      if (isTrustedFlashCompetition(m)) { score += 24; reasons.push('trusted_flash_competition'); }
+      else if (hasSeniorProfessionalSignal(m)) { score += 8; reasons.push('senior_flash_competition'); }
+      else { score -= 52; reasons.push('flashscore_untrusted_basic_rejected'); }
+
+      if (isNoisyFlashCompetition(m)) { score -= 55; reasons.push('flashscore_noisy_competition_rejected'); }
+      if (hasMostlyNonLatinText(m)) { score -= 35; reasons.push('flashscore_non_latin_rejected'); }
+    } else {
+      // Stats/odds-backed Flashscore rows are much more reliable.
+      score += 14; reasons.push('flashscore_enriched');
+      if (isTrustedFlashCompetition(m) || hasSeniorProfessionalSignal(m)) score += 10;
+    }
   }
 
   // Flashscore rows without real minute/status are too noisy: require minute or explicit HT/LIVE text.
   if (isFlashscoreSource(m) && minute == null && !/\b(HT|LIVE|1H|2H|ET)\b/i.test(String(m.match_status||''))) {
-    score -= 35; reasons.push('flashscore_no_real_clock');
+    score -= 45; reasons.push('flashscore_no_real_clock');
   }
 
-  // v11.22: Wider live coverage mode. A senior Flashscore row with a real clock
-  // is visible even without stats/odds; it simply remains WATCH_ONLY/NO_REAL_STATS.
-  if (isFlashscoreSource(m) && minute != null && minute > 0 && minute <= 120 && !hasExcludedCompetitionText(m)) {
-    score += 16; reasons.push('flashscore_valid_clock_visible');
+  // Senior Flashscore rows with a real clock can be visible even without stats,
+  // but only if they pass the senior/pro allow-list above.
+  if (isFlashscoreSource(m) && minute != null && minute > 0 && minute <= 120 && flashscoreSeniorVisibleAllowed(m)) {
+    score += 18; reasons.push('flashscore_valid_clock_visible');
   }
 
   const validationScore = Math.max(0, Math.min(100, Math.round(score)));
@@ -621,13 +663,23 @@ function mergeAdapterResults(adapterResults) {
   }
 
   let merged = [...byKey.values()].filter(m => (m.validationScore || 0) >= 35 && m.match_live === '1');
-  // Final safety guard: never ship an impossible global live count. Keep best-quality rows.
-  const MAX_VISIBLE_LIVE = 95;
+
+  // v11.24: Dynamic visible cap. A high raw count from a basic x-feed usually
+  // means noisy global rows, not 150 truly useful senior betting matches. Keep
+  // ESPN/stats-rich matches first, then the best senior Flashscore discovery rows.
+  const statsRichCount = merged.filter(m => m.hasStats || (m.signalCount || 0) > 0 || m.source === 'espn' || m.source === 'espn_json').length;
+  const basicFlashCount = merged.filter(m => isFlashscoreBasicRow(m)).length;
+  let dynamicMaxVisible = 60;
+  if (merged.length > 80 && basicFlashCount / Math.max(merged.length,1) > 0.55) {
+    dynamicMaxVisible = Math.max(24, Math.min(45, statsRichCount * 4 + 20));
+  }
+  if (merged.length > 140) dynamicMaxVisible = Math.min(dynamicMaxVisible, 38);
+
   let capped = 0;
-  if (merged.length > MAX_VISIBLE_LIVE) {
+  if (merged.length > dynamicMaxVisible) {
     merged.sort((a,b) => matchQualityScore(b) - matchQualityScore(a));
-    capped = merged.length - MAX_VISIBLE_LIVE;
-    merged = merged.slice(0, MAX_VISIBLE_LIVE);
+    capped = merged.length - dynamicMaxVisible;
+    merged = merged.slice(0, dynamicMaxVisible);
   }
   const layerDebug = splitLiveLayers(merged);
   mergeAdapterResults.lastDebug = {
@@ -636,6 +688,7 @@ function mergeAdapterResults(adapterResults) {
     visibleLiveMatchesCount: layerDebug.visibleLiveMatches.length,
     signalEligibleMatchesCount: layerDebug.signalEligibleMatches.length,
     cappedBySafetyGuard: capped,
+    dynamicMaxVisible: (typeof dynamicMaxVisible !== 'undefined' ? dynamicMaxVisible : null),
     duplicateRemoved: Math.max(0, rawIn - merged.length),
     duplicateSamples: duplicateReport.slice(0,20),
     rejectedReasons: layerDebug.rejectedReasons,
@@ -665,4 +718,6 @@ module.exports = {
   isSignalEligibleMatch,
   splitLiveLayers,
   validationReasonBucket,
+  flashscoreSeniorVisibleAllowed,
+  isNoisyFlashCompetition,
 };

@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.23-production-dual-layer-live-pipeline
+ * server.js — CanliBet Scraper Service v11.24-calibrated-coverage-signal-pipeline
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -144,14 +144,16 @@ async function runFetchCycle() {
   let live = layerSplit.visibleLiveMatches
     .filter(m => m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
   let impossibleCountGuard = null;
-  if (live.length > 110) {
-    impossibleCountGuard = `suspicious_visible_count:${live.length}>110`;
-    log(`[GUARD] suspicious visible live count ${live.length} — applying dynamic tightening`);
+  if (live.length > 60) {
+    impossibleCountGuard = `suspicious_visible_count:${live.length}>60`;
+    const statsRich = live.filter(m => m.hasStats || (m.signalCount || 0) > 0 || m.source === 'espn' || m.source === 'espn_json').length;
+    const targetMax = Math.max(24, Math.min(45, statsRich * 4 + 20));
+    log(`[GUARD] suspicious visible live count ${live.length} — final calibrated cap ${targetMax}`);
     live = live
-      .filter(m => (m.validationScore || 0) >= 48 && m.minute != null && m.minute > 0 && m.minute < 130)
-      .sort((a,b) => (b.validationScore||0) - (a.validationScore||0) || (b.hasStats?1:0) - (a.hasStats?1:0))
-      .slice(0, 95);
-    log(`[GUARD] after dynamic visible gate: ${live.length} matches`);
+      .filter(m => (m.validationScore || 0) >= 45 && m.minute != null && m.minute > 0 && m.minute < 130)
+      .sort((a,b) => (b.hasStats?1:0) - (a.hasStats?1:0) || (b.signalCount||0) - (a.signalCount||0) || (b.validationScore||0) - (a.validationScore||0))
+      .slice(0, targetMax);
+    log(`[GUARD] after calibrated visible gate: ${live.length} matches`);
   }
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
@@ -272,7 +274,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.23-production-dual-layer-live-pipeline', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.24-calibrated-coverage-signal-pipeline', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -392,7 +394,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.23-production-dual-layer-live-pipeline listening on :${PORT}`);
+  log(`CanliBet scraper service v11.24-calibrated-coverage-signal-pipeline listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
