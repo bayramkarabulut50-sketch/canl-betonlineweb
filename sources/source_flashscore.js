@@ -1,5 +1,5 @@
 /**
- * source_flashscore.js — CanliBet Scraper Service v11.21
+ * source_flashscore.js — CanliBet Scraper Service v11.22
  *
  * Public HTTP scraper for Flashscore/Livesport x-feed.
  * No API key. No browser automation. No proxy/IP rotation. No CAPTCHA bypass.
