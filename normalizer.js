@@ -1,9 +1,9 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.21
+ * normalizer.js — CanliBet Scraper Service v11.23
  *
  * Converts any source adapter output → canonical match format.
- * v11.21: Comprehensive live status set, impossible count guard,
- * strict minute parsing, provider confidence scoring.
+ * v11.23: production dual-layer visible/signal pipeline,
+ * dynamic quality thresholds, provider confidence scoring.
  */
 'use strict';
 
@@ -88,7 +88,7 @@ function normOdds(v) {
 /**
  * Comprehensive live status set covering ESPN, Flashscore, FotMob, TheSportsDB,
  * OpenLigaDB and custom adapter values.
- * v11.21: expanded to cover STATUS_* ESPN variants, state:'in', period-based.
+ * v11.22: expanded to cover STATUS_* ESPN variants, state:'in', period-based.
  */
 const LIVE_STATUS_SET = new Set([
   // Generic
@@ -194,12 +194,14 @@ function isLiveMatch(raw) {
 // ── Canonical quality / betting relevance ───────────────────────────────────
 
 const EXCLUDED_COMPETITION_RE = new RegExp([
+  // Never include non-betting / artificial feeds
   '\\bu\\s?1[5-9]\\b','\\bu\\s?2[0-3]\\b','\\bu15\\b','\\bu16\\b','\\bu17\\b','\\bu18\\b','\\bu19\\b','\\bu20\\b','\\bu21\\b','\\bu23\\b',
-  'youth','junior','juniors','academy','academia','reserves?','reserve','b team',
-  'women','woman','female','feminine','femenino','femenina',
+  'u-17','u-19','under\\s?17','under\\s?19','youth','junior','juniors','academy','academia',
+  'reserves?','reserve\\s?league','b team','women','womens','women\\s','female','feminine','\\bii\\b','\\b2\\b',
   'friendly','friendlies','club friendly','international friendly','pre-season','preseason',
   'virtual','esoccer','e-soccer','cyber','simulated','simulation','fifa\\s?e',
-  'amateur','regional','county','district','school','college','state league','npl','conference league - play offs','play offs','youth league','reserve league','u-17','u-19','ю17','ю19','жен','женщ','резерв','молод','младеж','молодеж','юнош'
+  'school','college','university','student',
+  'ю17','ю19','молод','младеж','юнош'
 ].join('|'), 'i');
 
 function hasExcludedCompetitionText(m) {
@@ -248,43 +250,136 @@ function hasBrokenTeamNames(m) {
   return false;
 }
 
+
+function hasSeniorProfessionalSignal(m) {
+  const txt = compactText([m.league_name, m.competition, m.sourceLeague].map(v=>String(v||'')).join(' '));
+  if (!txt) return false;
+  return /premier|serie a|serie b|la liga|laliga|bundesliga|ligue 1|ligue 2|championship|league one|league two|eredivisie|primeira|super lig|süper lig|pro league|jupiler|major league soccer|mls|allsvenskan|eliteserien|superliga|a league|j1 league|k league|saudi pro|libertadores|sudamericana|champions league|europa league|conference league|national league|primera division|primera división|liga mx|belgian|austrian|swiss|turkish|english|italian|spanish|german|french|dutch|portuguese|brazil|argentina|mexico|norway|sweden|denmark|finland|poland|czech|greek|croatia|serbia|romania|bulgaria|ireland|scotland|australia|japan|china|korea|india|indonesia|thailand|malaysia/.test(txt);
+}
+
+function hasRealLiveClock(m) {
+  const minute = normMinute(m.minute);
+  if (minute != null && minute > 0 && minute <= 130) return true;
+  const st = String(m.match_status || '').toUpperCase();
+  return /\b(1H|2H|HT|LIVE|IN_PROGRESS|HALFTIME|FIRST_HALF|SECOND_HALF|ET|DELAYED|SUSPENDED)\b/.test(st);
+}
+
+function validationReasonBucket(reasons) {
+  const rs = Array.isArray(reasons) ? reasons : [];
+  if (rs.some(r => /excluded_competition|youth|friendly|reserve|women|simulation/i.test(r))) return 'excluded_competition';
+  if (rs.some(r => /final|completed/i.test(r))) return 'finished';
+  if (rs.some(r => /scheduled/i.test(r))) return 'scheduled';
+  if (rs.some(r => /invalid_team/i.test(r))) return 'invalid_team_names';
+  if (rs.some(r => /missing_minute|invalid_minute|no_real_clock/i.test(r))) return 'missing_or_invalid_minute';
+  if (rs.some(r => /quality_low|no_stats/i.test(r))) return 'quality_low';
+  return rs[0] || 'unknown';
+}
+
+function isSignalEligibleMatch(m) {
+  if (!m || m.match_live !== '1') return false;
+  if ((m.validationScore || 0) >= 70 && (m.hasStats || (m.signalCount || 0) > 0)) return true;
+  if (m.hasStats && (m.dataReliabilityScore || 0) >= 55 && (m.validationScore || 0) >= 55) return true;
+  if ((m.signalCount || 0) > 0 || m.topSignal) return true;
+  return false;
+}
+
+function splitLiveLayers(matches) {
+  const visibleLiveMatches = [];
+  const signalEligibleMatches = [];
+  const rejectedMatches = [];
+  const rejectedReasons = {};
+  const providerCounts = {};
+  const signalEligibleProviderCounts = {};
+  const lowDataVisible = [];
+
+  for (const m of (Array.isArray(matches) ? matches : [])) {
+    const reasons = Array.isArray(m.validationReasons) ? m.validationReasons : [];
+    const rejectReason = validationReasonBucket(reasons);
+    if (!m || m.match_live !== '1' || (m.validationScore || 0) < 35) {
+      rejectedMatches.push(m);
+      rejectedReasons[rejectReason] = (rejectedReasons[rejectReason] || 0) + 1;
+      continue;
+    }
+    visibleLiveMatches.push(m);
+    const provider = m._mergeProvider || m.source || 'unknown';
+    providerCounts[provider] = (providerCounts[provider] || 0) + 1;
+    if (!m.hasStats) lowDataVisible.push(m);
+    if (isSignalEligibleMatch(m)) {
+      signalEligibleMatches.push(m);
+      signalEligibleProviderCounts[provider] = (signalEligibleProviderCounts[provider] || 0) + 1;
+    }
+  }
+
+  const visibleVsRawRatio = matches && matches.length ? visibleLiveMatches.length / matches.length : 0;
+  const statsCoverageRatio = visibleLiveMatches.length ? visibleLiveMatches.filter(m=>m.hasStats).length / visibleLiveMatches.length : 0;
+  const oddsCoverageRatio = visibleLiveMatches.length ? visibleLiveMatches.filter(m=>m.hasOdds).length / visibleLiveMatches.length : 0;
+  const signalGenerationRate = visibleLiveMatches.length ? visibleLiveMatches.filter(m=>(m.signalCount||0)>0).length / visibleLiveMatches.length : 0;
+
+  return {
+    visibleLiveMatches,
+    signalEligibleMatches,
+    rejectedMatches,
+    rejectedReasons,
+    visibleProviderCounts: providerCounts,
+    signalEligibleProviderCounts,
+    lowDataVisibleCount: lowDataVisible.length,
+    health: {
+      providerCoverageScore: Math.min(100, visibleLiveMatches.length * 6),
+      liveValidationScore: Math.round(visibleVsRawRatio * 100),
+      signalGenerationRate: Number(signalGenerationRate.toFixed(3)),
+      visibleVsRawRatio: Number(visibleVsRawRatio.toFixed(3)),
+      rejectedRatio: matches && matches.length ? Number(((matches.length-visibleLiveMatches.length)/matches.length).toFixed(3)) : 0,
+      duplicateRatio: 0,
+      statsCoverageRatio: Number(statsCoverageRatio.toFixed(3)),
+      oddsCoverageRatio: Number(oddsCoverageRatio.toFixed(3)),
+    }
+  };
+}
+
 function computeValidation(m) {
   const reasons = [];
-  let score = 55;
+  let score = 58;
 
   const statusClass = m._statusClass || classifyStatus(m.match_status);
   const minute = normMinute(m.minute);
 
   if (hasBrokenTeamNames(m)) { score -= 45; reasons.push('invalid_team_names'); }
-  if (hasExcludedCompetitionText(m)) { score -= 50; reasons.push('excluded_competition'); }
+  if (hasExcludedCompetitionText(m)) { score -= 70; reasons.push('excluded_competition'); }
 
   if (statusClass === 'final') { score -= 100; reasons.push('final_status'); }
   if (statusClass === 'scheduled') { score -= 100; reasons.push('scheduled_status'); }
   if (m.completed === true) { score -= 100; reasons.push('completed_true'); }
 
-  if (minute == null) { score -= 25; reasons.push('missing_minute'); }
+  if (minute == null) { score -= 32; reasons.push('missing_minute'); }
   else if (minute <= 0 || minute > 130) { score -= 60; reasons.push('invalid_minute'); }
   else { score += 15; reasons.push('valid_minute'); }
 
-  if (m.hasStats) { score += 20; reasons.push('has_stats'); }
-  else { score -= 8; reasons.push('no_stats'); }
+  if (m.hasStats) { score += 22; reasons.push('has_stats'); }
+  else { score -= 4; reasons.push('no_stats'); }
 
   if (m.hasOdds) { score += 8; reasons.push('has_odds'); }
-  if (m.source === 'espn') { score += 15; reasons.push('espn_verified'); }
+  if (m.source === 'espn' || m.source === 'espn_json') { score += 18; reasons.push('espn_verified'); }
+  if (hasSeniorProfessionalSignal(m)) { score += 10; reasons.push('senior_professional_signal'); }
   if (isFlashscoreSource(m)) {
     score += 3; reasons.push('flashscore_basic');
 
     // Flashscore x-feed is excellent for discovery but very noisy. Keep only
     // betting-grade senior/pro competitions unless a row has real stats/odds.
-    if (!m.hasStats && !m.hasOdds) { score -= 20; reasons.push('flashscore_basic_no_stats_odds'); }
+    if (!m.hasStats && !m.hasOdds) { score -= 8; reasons.push('flashscore_basic_no_stats_odds'); }
     if (isTrustedFlashCompetition(m)) { score += 25; reasons.push('trusted_flash_competition'); }
-    else { score -= 20; reasons.push('flashscore_untrusted_competition'); }
-    if (hasMostlyNonLatinText(m)) { score -= 45; reasons.push('flashscore_non_latin_feed'); }
+    else { score -= 1; reasons.push('flashscore_untrusted_competition'); }
+    if (hasMostlyNonLatinText(m)) { score -= 8; reasons.push('flashscore_non_latin_feed'); }
   }
 
   // Flashscore rows without real minute/status are too noisy: require minute or explicit HT/LIVE text.
   if (isFlashscoreSource(m) && minute == null && !/\b(HT|LIVE|1H|2H|ET)\b/i.test(String(m.match_status||''))) {
-    score -= 45; reasons.push('flashscore_no_real_clock');
+    score -= 35; reasons.push('flashscore_no_real_clock');
+  }
+
+  // v11.22: Wider live coverage mode. A senior Flashscore row with a real clock
+  // is visible even without stats/odds; it simply remains WATCH_ONLY/NO_REAL_STATS.
+  if (isFlashscoreSource(m) && minute != null && minute > 0 && minute <= 120 && !hasExcludedCompetitionText(m)) {
+    score += 16; reasons.push('flashscore_valid_clock_visible');
   }
 
   const validationScore = Math.max(0, Math.min(100, Math.round(score)));
@@ -303,20 +398,19 @@ function computeValidation(m) {
 function validateProviderBatch(matches, providerName) {
   if (!Array.isArray(matches)) return { ok: true };
   const count = matches.length;
-  if (count > 160) {
-    return { ok: false, reason: `impossible_count:${count}>160`, quarantine: true };
+  if (count > 220) {
+    return { ok: false, reason: `impossible_count:${count}>220`, quarantine: true };
   }
   if (providerName === 'flashscore' || providerName === 'flashscore_feed') {
-    const weak = matches.filter(m => (m.validationScore || 0) < 55 || m.minute == null).length;
-    if (count > 60 && weak / Math.max(count,1) > 0.35) {
+    const weak = matches.filter(m => (m.validationScore || 0) < 35 || m.minute == null).length;
+    if (count > 140 && weak / Math.max(count,1) > 0.75) {
       return { ok:false, reason:`flashscore_low_quality_batch:${weak}/${count}`, quarantine:true };
     }
   }
-  if (count > 100) {
-    const noStats = matches.filter(m => !m.hasStats).length;
-    if (noStats / Math.max(count,1) > 0.90) {
-      return { ok:false, reason:`too_many_no_stats:${noStats}/${count}`, quarantine:true };
-    }
+  // Do not quarantine a public live-score feed merely because it lacks stats.
+  // Stats-less rows are visible-only; signal engine handles them safely.
+  if (count > 240) {
+    return { ok:false, reason:`impossible_provider_count:${count}>240`, quarantine:true };
   }
   return { ok: true };
 }
@@ -417,7 +511,7 @@ function makeCanonical(raw, source) {
  * Normalize an array of raw matches from one adapter.
  * Applies strict live filter, dedup, and impossible count guard.
  */
-function normalizeMatches(rawMatches, source, { liveOnly = true, minValidationScore = 55 } = {}) {
+function normalizeMatches(rawMatches, source, { liveOnly = true, minValidationScore = 35 } = {}) {
   if (!Array.isArray(rawMatches)) return [];
   const seen = new Set();
   const out = [];
@@ -459,7 +553,7 @@ function normalizeMatches(rawMatches, source, { liveOnly = true, minValidationSc
 /**
  * Merge results from multiple adapters.
  * First adapter with a given match_id wins; later adapters fill missing fields.
- * v11.21: adds provider confidence scoring for dedup tie-breaking.
+ * v11.22: adds provider confidence scoring for dedup tie-breaking.
  */
 function matchQualityScore(m) {
   const providerPriority = {
@@ -526,23 +620,30 @@ function mergeAdapterResults(adapterResults) {
     }
   }
 
-  let merged = [...byKey.values()].filter(m => (m.validationScore || 0) >= 55 && m.match_live === '1');
+  let merged = [...byKey.values()].filter(m => (m.validationScore || 0) >= 35 && m.match_live === '1');
   // Final safety guard: never ship an impossible global live count. Keep best-quality rows.
-  const MAX_VISIBLE_LIVE = 60;
+  const MAX_VISIBLE_LIVE = 95;
   let capped = 0;
   if (merged.length > MAX_VISIBLE_LIVE) {
     merged.sort((a,b) => matchQualityScore(b) - matchQualityScore(a));
     capped = merged.length - MAX_VISIBLE_LIVE;
     merged = merged.slice(0, MAX_VISIBLE_LIVE);
   }
+  const layerDebug = splitLiveLayers(merged);
   mergeAdapterResults.lastDebug = {
     rawIn,
     dedupeAfter: merged.length,
+    visibleLiveMatchesCount: layerDebug.visibleLiveMatches.length,
+    signalEligibleMatchesCount: layerDebug.signalEligibleMatches.length,
     cappedBySafetyGuard: capped,
     duplicateRemoved: Math.max(0, rawIn - merged.length),
     duplicateSamples: duplicateReport.slice(0,20),
+    rejectedReasons: layerDebug.rejectedReasons,
+    lowDataVisibleCount: layerDebug.lowDataVisibleCount,
     qualityTiers: merged.reduce((a,m)=>{ const k=m.validationTier||'UNKNOWN'; a[k]=(a[k]||0)+1; return a; },{}),
     providerCounts: merged.reduce((a,m)=>{ const k=m._mergeProvider||m.source||'unknown'; a[k]=(a[k]||0)+1; return a; },{}),
+    signalEligibleProviderCounts: layerDebug.signalEligibleProviderCounts,
+    pipelineHealth: layerDebug.health,
   };
   return merged;
 }
@@ -561,4 +662,7 @@ module.exports = {
   computeValidation,
   canonicalMatchKey,
   matchQualityScore,
+  isSignalEligibleMatch,
+  splitLiveLayers,
+  validationReasonBucket,
 };

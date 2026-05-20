@@ -1,7 +1,7 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "11.21.0",
-  "description": "CanliBet live scraper backend — stable quality-filtered public HTTP scraper network",
+  "version": "11.22.0",
+  "description": "CanliBet live scraper backend — coverage-balanced signal-stable public HTTP scraper network",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

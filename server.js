@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.21-quality-signal-stability
+ * server.js — CanliBet Scraper Service v11.23-production-dual-layer-live-pipeline
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -10,7 +10,7 @@
 
 const express = require('express');
 const cors    = require('cors');
-const { mergeAdapterResults } = require('./normalizer');
+const { mergeAdapterResults, splitLiveLayers } = require('./normalizer');
 const statsAudit = require('./sources/source_stats_audit');
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -138,12 +138,20 @@ async function runFetchCycle() {
   }
 
   const merged = mergeAdapterResults(results);
-  // v11.20: impossible count guard on merged result before serving
-  let live = merged.filter(m => m.match_live === '1' && m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
-  if (live.length > 120) {
-    log(`[GUARD] suspicious live count ${live.length} — applying HIGH/MEDIUM validation gate`);
-    live = live.filter(m => (m.validationScore || 0) >= 55 && m.minute != null && m.minute > 0 && m.minute < 130);
-    log(`[GUARD] after quality gate: ${live.length} matches`);
+  const layerSplit = splitLiveLayers(merged);
+  // v11.23: dual-layer pipeline. Public response uses visibleLiveMatches;
+  // signalEligibleMatches is exposed in debug and used by frontend for watch/hero.
+  let live = layerSplit.visibleLiveMatches
+    .filter(m => m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
+  let impossibleCountGuard = null;
+  if (live.length > 110) {
+    impossibleCountGuard = `suspicious_visible_count:${live.length}>110`;
+    log(`[GUARD] suspicious visible live count ${live.length} — applying dynamic tightening`);
+    live = live
+      .filter(m => (m.validationScore || 0) >= 48 && m.minute != null && m.minute > 0 && m.minute < 130)
+      .sort((a,b) => (b.validationScore||0) - (a.validationScore||0) || (b.hasStats?1:0) - (a.hasStats?1:0))
+      .slice(0, 95);
+    log(`[GUARD] after dynamic visible gate: ${live.length} matches`);
   }
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
@@ -152,7 +160,23 @@ async function runFetchCycle() {
     statsCoverage:live.filter(m=>m.hasStats).length,
     signalCoverage:live.filter(m=>m.signalCount > 0).length,
     actionableSignals:live.reduce((a,m)=>a+(m.signalCount||0),0),
-    qualityTiers: live.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{}),
+    visibleLiveMatchesCount: live.length,
+    signalEligibleMatchesCount: layerSplit.signalEligibleMatches.length,
+    visibleProviderCounts: layerSplit.visibleProviderCounts,
+    signalEligibleProviderCounts: layerSplit.signalEligibleProviderCounts,
+    rejectedProviderCounts: {},
+    rejectedReasons: layerSplit.rejectedReasons,
+    duplicateRemoved: (mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0,
+    qualityRejected: layerSplit.rejectedReasons.quality_low || 0,
+    youthRejected: layerSplit.rejectedReasons.excluded_competition || 0,
+    friendlyRejected: layerSplit.rejectedReasons.excluded_competition || 0,
+    finishedRejected: layerSplit.rejectedReasons.finished || 0,
+    scheduledRejected: layerSplit.rejectedReasons.scheduled || 0,
+    lowDataVisibleCount: layerSplit.lowDataVisibleCount,
+    impossibleCountGuard,
+    qualityTiers: live.reduce((acc,m)=>{ const k=m.validationTier||m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{}),
+    validationTiers: live.reduce((acc,m)=>{ const k=m.validationTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{}),
+    sourceCounts: live.reduce((acc,m)=>{ const k=m._mergeProvider||m.source||'unknown'; acc[k]=(acc[k]||0)+1; return acc; },{}),
     statsProviderSelected:null,
     statsSourcesTried:[],
     statsSourceFailReasons:{},
@@ -171,6 +195,9 @@ async function runFetchCycle() {
     dedupeAfter:  live.length,
     topProviders: results.filter(r=>r.success&&r.matches?.length>0).map(r=>({ provider:r.provider, count:r.matches.length })),
     canonicalQuality: mergeAdapterResults.lastDebug || {},
+    pipelineHealth: Object.assign({}, layerSplit.health, {
+      duplicateRatio: merged.length ? Number((((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0) / Math.max(merged.length + ((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0),1)).toFixed(3)) : 0
+    }),
     validationRejectDebug: require('./normalizer').normalizeMatches.lastDebug || {},
     sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
                        results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null,
@@ -245,7 +272,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.21-quality-signal-stability', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.23-production-dual-layer-live-pipeline', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -304,6 +331,10 @@ app.get('/live', async (req,res) => {
       dedupeBefore:           s.meta.dedupeBefore           || 0,
       dedupeAfter:            s.meta.dedupeAfter            || 0,
       topProviders:           s.meta.topProviders           || [],
+      validationTiers:        s.meta.validationTiers        || {},
+      sourceCounts:           s.meta.sourceCounts           || {},
+      canonicalQuality:       s.meta.canonicalQuality       || {},
+      validationRejectDebug:  s.meta.validationRejectDebug  || {},
     }});
   } catch(err) {
     log('[ERROR] /live', { error:err.message });
@@ -361,7 +392,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.21-quality-signal-stability listening on :${PORT}`);
+  log(`CanliBet scraper service v11.23-production-dual-layer-live-pipeline listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
