@@ -39,6 +39,8 @@ function endpointList() {
     eps.push(`https://www.fotmob.com/api/matches?date=${date}`);
     eps.push(`https://www.fotmob.com/api/matches?date=${date}&timezone=UTC`);
     eps.push(`https://www.fotmob.com/api/matches?date=${date}&ccode3=USA`);
+    eps.push(`https://www.fotmob.com/matches?date=${date}`);
+    eps.push(`https://www.fotmob.com/?date=${date}`);
   }
   return eps;
 }
@@ -48,6 +50,27 @@ function classifyStatus(s) {
   if (s===404) return FAIL.HTTP_404;
   if (s===429) return FAIL.HTTP_429;
   if (s>=500)  return FAIL.HTTP_5XX;
+  return null;
+}
+
+
+function tryParseFotmobHtml(text) {
+  if (!text || typeof text !== 'string') return null;
+  // Classic Next.js payload
+  const m = text.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (m) {
+    try { return JSON.parse(m[1]); } catch(e) {}
+  }
+  // App router payload sometimes stores escaped JSON chunks. Extract candidate objects
+  // containing "matches" or "leagues" and parse the largest one.
+  const candidates = [];
+  const re = /\{[^<>]{100,}?(?:matches|leagues)[^<>]{100,}?\}/g;
+  let x;
+  while ((x = re.exec(text)) && candidates.length < 20) candidates.push(x[0]);
+  candidates.sort((a,b)=>b.length-a.length);
+  for (const c of candidates) {
+    try { return JSON.parse(c.replace(/\\"/g, '"')); } catch(e) {}
+  }
   return null;
 }
 
@@ -141,11 +164,18 @@ async function probe(endpoint) {
   };
 
   if (!res.ok) { base.failReason = classifyStatus(res.status) || FAIL.HTTP_5XX; return base; }
-  if (!String(res.contentType || '').includes('json')) { base.failReason = FAIL.NON_JSON; return base; }
 
   let data;
-  try { data = JSON.parse(res.text); base.jsonParseOk = true; }
-  catch(e) { base.failReason = FAIL.JSON_PARSE; return base; }
+  if (String(res.contentType || '').includes('json')) {
+    try { data = JSON.parse(res.text); base.jsonParseOk = true; }
+    catch(e) { base.failReason = FAIL.JSON_PARSE; return base; }
+  } else if (String(res.contentType || '').includes('html')) {
+    data = tryParseFotmobHtml(res.text);
+    if (data) base.jsonParseOk = true;
+    else { base.failReason = FAIL.NON_JSON; return base; }
+  } else {
+    base.failReason = FAIL.NON_JSON; return base;
+  }
 
   base.topLevelKeys = Object.keys(data || {}).slice(0,12);
   const raw = extractMatches(data);

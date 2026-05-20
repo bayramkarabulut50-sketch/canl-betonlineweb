@@ -79,14 +79,33 @@ const LIVE_FAST_SLUGS = [
   // Asia/Oceania/Africa high-yield public ESPN slugs
   'chn.1','jpn.1','kor.1','ksa.1','idn.1','tha.1','mys.1','aus.1','ind.1','zaf.1','egy.1','mar.1'
 ];
+// v11.16: rolling timezone-aware date windows for live path.
+// ESPN dates param is UTC-date sensitive. Turkey (UTC+3) can be on a
+// different UTC calendar day than the match timestamps ESPN returns.
+// Scan yesterday/today/tomorrow so no timezone rollover misses live matches.
+function buildRollingDateWindows() {
+  const now = new Date();
+  const windows = [];
+  for (let offset = -1; offset <= 1; offset++) {
+    const d = new Date(now);
+    d.setTime(d.getTime() + offset * 86400000);
+    const yyyy = d.getUTCFullYear();
+    const mm   = String(d.getUTCMonth()+1).padStart(2,'0');
+    const dd   = String(d.getUTCDate()).padStart(2,'0');
+    windows.push(`${yyyy}${mm}${dd}`);
+  }
+  return [...new Set(windows)];
+}
+
 function buildFastScoreboardEndpoints() {
-  const today = yyyymmddUTC(0);
+  const rollingDates = buildRollingDateWindows();
   const eps = [];
   for (const slug of LIVE_FAST_SLUGS) {
     const base = `${BASE}/${slug}/scoreboard`;
+    // No-dates first (ESPN default = today per ESPN server time)
     eps.push(base);
-    // today only, no yesterday/tomorrow in live path
-    eps.push(`${base}?dates=${today}&limit=200`);
+    // Then all rolling windows to catch timezone-shifted live matches
+    for (const d of rollingDates) eps.push(`${base}?dates=${d}&limit=200`);
   }
   return [...new Set(eps)];
 }
@@ -199,11 +218,29 @@ function isEspnScheduledStatus(statusType = {}) {
 }
 
 function isEspnLiveStatus(statusType = {}, compStatus = {}) {
+  // v11.16: completed===true is a hard final signal even if name looks live
+  // (ESPN sometimes emits STATUS_HALFTIME with completed:true at actual FT)
+  if (statusType.completed === true) return false;
+
+  // Standard final check
   if (isEspnFinalStatus(statusType)) return false;
+
   const parts = normalizeEspnStatus(statusType);
+
+  // Accept explicit live keywords
   if (hasLiveKeyword(parts)) return true;
-  // ESPN sometimes gives state:"in" with no STATUS_* name.
+
+  // STATUS_DELAYED — match paused/suspended but not finished
+  if (parts.some(p => /DELAY|SUSPEND|INTERRUPT/.test(p))) return true;
+
+  // ESPN sometimes gives state:"in" with no STATUS_* name
   if (String(statusType.state || '').toLowerCase() === 'in') return true;
+
+  // HT description present even if type.name is odd
+  const desc = String(statusType.description || statusType.detail || statusType.shortDetail || '').toUpperCase();
+  if (/\bHT\b|HALF.?TIME|HALFTIME/.test(desc) && statusType.completed !== true) return true;
+
+  // Clock-based live detection (minute 1-139, not scheduled)
   const min = parseEspnClockMinutes(statusType, compStatus);
   return min != null && min > 0 && min < 140 && !isEspnScheduledStatus(statusType);
 }
@@ -518,7 +555,48 @@ async function fetch(_browser, _options) {
     }
   }
 
-  const deduped = dedupeMatches(allMatches);
+  let deduped = dedupeMatches(allMatches);
+
+  // v11.16: Secondary fallback scan — when primary returns 0 live matches,
+  // probe all/scoreboard with no-dates + all rolling windows before giving up.
+  if (deduped.length === 0) {
+    console.log('[espn] PRIMARY returned 0 live — running SECONDARY fallback (rolling windows + all/scoreboard)');
+    const rollingDates = buildRollingDateWindows();
+    const secondaryEndpoints = [
+      // No-dates (ESPN server-time = usually UTC, catches matches ESPN considers "today")
+      `${BASE}/all/scoreboard`,
+      // Rolling windows on aggregate endpoint
+      ...rollingDates.map(d => `${BASE}/all/scoreboard?dates=${d}&limit=300`),
+      // High-yield individual slugs without date (server-time)
+      ...['eng.1','esp.1','ger.1','ita.1','fra.1','tur.1','usa.1','bra.1','arg.1','chn.1','jpn.1','kor.1']
+          .flatMap(slug => [
+            `${BASE}/${slug}/scoreboard`,
+            ...rollingDates.map(d => `${BASE}/${slug}/scoreboard?dates=${d}&limit=200`)
+          ])
+    ].filter((ep, idx, arr) => arr.indexOf(ep) === idx);  // unique
+
+    console.log(`[espn] SECONDARY endpoints=${secondaryEndpoints.length}`);
+    const secondaryMatches = [];
+
+    for (const ep of secondaryEndpoints) {
+      try {
+        const r = await probe(ep, { acceptScheduled: false, debug: false, fetchStats: false });
+        if (r.parsedMatches > 0) {
+          secondaryMatches.push(...(r.matches || []));
+          console.log(`[espn] SECONDARY hit: ep=${ep.split('/soccer/')[1]||ep} parsed=${r.parsedMatches}`);
+        }
+      } catch(eSec) { /* never abort */ }
+    }
+
+    if (secondaryMatches.length > 0) {
+      const combined = dedupeMatches([...allMatches, ...secondaryMatches]);
+      deduped = combined;
+      console.log(`[espn] SECONDARY done — deduped=${deduped.length}`);
+    } else {
+      console.log('[espn] SECONDARY also returned 0 live matches');
+    }
+  }
+
   const qualityTiers = deduped.reduce((acc,m)=>{ const k=m.liveQualityTier||'UNKNOWN'; acc[k]=(acc[k]||0)+1; return acc; },{});
   const globalAudit = {
     scanMode,
@@ -569,8 +647,21 @@ function canonicalMatchKey(m) {
   return id ? `id:${id}` : `${h}__${a}`;
 }
 
+function liveStatusPriority(m) {
+  // v11.16: live status takes highest dedup precedence — never let FULL_TIME overwrite IN_PROGRESS
+  const s = String(m.match_status || '').toUpperCase();
+  if (m.match_live === '1') {
+    if (/^(IN_PROGRESS|1H|2H|ET|PEN)$/.test(s)) return 100;
+    if (/^(HT|HALFTIME|HALF_TIME)$/.test(s))      return 90;
+    if (/DELAY|SUSPEND/.test(s))                   return 80;
+    return 70; // match_live='1' but unknown status string
+  }
+  if (/SCHEDULED|PRE/.test(s)) return 10;
+  return 0; // FULL_TIME / FINAL
+}
+
 function matchQualityScore(m) {
-  let s = 0;
+  let s = liveStatusPriority(m) * 10; // live priority is dominant
   if (m.hasStats) s += 40;
   if (m.hasOdds) s += 25;
   if (m.minute != null) s += 10;
@@ -923,13 +1014,29 @@ async function fetch(_browser, _options) {
     }
   }
 
-  // Deduplicate by match_id (all/scoreboard often overlaps with eng.1, etc.)
-  const seenIds = new Set();
-  const deduped = [];
+  // v11.16: Priority-aware dedupe — IN_PROGRESS > HALFTIME > DELAYED > SCHEDULED > FULL_TIME
+  // When same match appears multiple times (from different date windows or slugs),
+  // prefer the copy with the most "live" status to avoid FULL_TIME overwriting IN_PROGRESS.
+  function liveStatusPriority(m) {
+    const s = String(m.match_status || '').toUpperCase();
+    if (s === 'IN_PROGRESS' || s === '1H' || s === '2H' || s === 'ET' || s === 'PEN') return 5;
+    if (s === 'HT' || s === 'HALFTIME' || s === 'HALF_TIME')                          return 4;
+    if (/DELAY|SUSPEND/.test(s))                                                       return 3;
+    if (m.match_live === '1')                                                          return 2;
+    if (s === 'SCHEDULED' || s === 'PRE')                                             return 1;
+    return 0; // FULL_TIME, FINAL etc
+  }
+
+  const bestByKey = new Map();
   for (const m of allMatches) {
     const key = m.match_id || (m.match_hometeam_name + '___' + m.match_awayteam_name);
-    if (!seenIds.has(key)) { seenIds.add(key); deduped.push(m); }
+    const existing = bestByKey.get(key);
+    if (!existing || liveStatusPriority(m) > liveStatusPriority(existing)) {
+      bestByKey.set(key, m);
+    }
   }
+  const deduped = [...bestByKey.values()];
+  console.log(`[espn] dedup: ${allMatches.length} raw → ${deduped.length} unique (priority-aware)`);
 
   const globalAudit = {
     endpointsTried:       scanEndpoints.length,
