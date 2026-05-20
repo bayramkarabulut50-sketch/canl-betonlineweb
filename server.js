@@ -1,9 +1,10 @@
 /**
- * server.js — CanliBet Scraper Service v11.12-fast-espn-live-frontend-fix
+ * server.js — CanliBet Scraper Service v11.15-scraper-only-data-network
  *
- * This version tests public JSON endpoints only.
- * No HTML scraping. No browser automation. No anti-bot bypass. No proxy.
- * Each source is a public JSON endpoint probe.
+ * Scraper-only data network.
+ * No paid/API-key provider connections. No API-Sports. No API-Football.
+ * No SofaScore/IP-sensitive source. No proxy/IP rotation/browser automation.
+ * Only public scraper/HTTP JSON probes are used.
  */
 'use strict';
 
@@ -62,6 +63,7 @@ AUDIT_ADAPTERS.push(espnMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMo
 // Live adapters — v11.11 ESPN-first/no-IP-sensitive coverage.
 // SofaScore removed. Primary live source is ESPN public JSON.
 if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only, primary)'); }
+// v11.15: API-key providers intentionally removed. Scraper-only policy.
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
 if (ENABLE_OPENLIGADB)  { LIVE_ADAPTERS.push(openligadbMod);  log('Adapter: openligadb_json (HTTP-only)'); }
 if (ENABLE_THESPORTSDB) { LIVE_ADAPTERS.push(thesportsdbMod); log('Adapter: thesportsdb_json (HTTP-only)'); }
@@ -128,9 +130,14 @@ async function runFetchCycle() {
     lastLiveSource: results.find(r=>r.success&&r.matches?.length>0&&r.provider!=='mock')?.provider || null,
     mockSuppressed: DISABLE_MOCK_FALLBACK,
     note: live.length ? 'real_live_matches_found_multi_source' : 'no_real_live_matches_from_current_sources',
-    noKeyCoverageNote: 'Only no-key/public JSON sources are used. Mock disabled. API-key and IP-sensitive sources such as SofaScore are intentionally excluded.',
+    scraperOnlyNote: 'No API-key provider connections are used. ESPN/FotMob/OpenLigaDB/TheSportsDB/AIScore are public scraper/HTTP probes only; SofaScore/IP-sensitive sources are excluded.',
     sourceGlobalAudit: results.find(r=>r && r._globalAudit)?._globalAudit ||
-                       results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null
+                       results.find(r=>r && r.sourceGlobalAudit)?.sourceGlobalAudit || null,
+    dataNetwork: {
+      policy:'NO_BROWSER_NO_PROXY_NO_IP_ROTATION_NO_SOFASCORE',
+      apiKeyProviders:'REMOVED_BY_POLICY',
+      coverageReality: 'Coverage depends on scraper/public HTTP sources only. ESPN is primary; extra non-IP-sensitive scraper probes can be added later after audit.'
+    }
   };
 
   _snapshot = { matches:live, allMatches:merged, meta, fetchedAt:t0, expiresAt:t0+CACHE_TTL_MS };
@@ -197,13 +204,16 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.12-fast-espn-live-frontend-fix', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.15-scraper-only-data-network', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
     fotmob_json:  ENABLE_FOTMOB,
     aiscore_json: ENABLE_AISCORE,
+    thesportsdb_json: ENABLE_THESPORTSDB,
+    openligadb_json: ENABLE_OPENLIGADB,
     sofascore:    false,
+    api_key_providers: false,
     mock:         ENABLE_MOCK,
   },
   lastLiveSource:  _snapshot?.meta?.lastLiveSource || null,
@@ -285,7 +295,7 @@ app.get('/stats-audit', async (req,res) => {
   }
 });
 
-app.get('/odds', async (_,res) => {
+app.get('/odds', async (req,res) => {
   try {
     const s = await getSnapshot(String(req.query.force || '').toLowerCase() === 'true');
     const odds = s.matches.map(m=>({ match_id:m.match_id, match_hometeam_name:m.match_hometeam_name, match_awayteam_name:m.match_awayteam_name, odds:m.odds, hasOdds:m.hasOdds, source:m.source }));
@@ -300,7 +310,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.07-critical-global-aggregation listening on :${PORT}`);
+  log(`CanliBet scraper service v11.15-scraper-only-data-network listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
