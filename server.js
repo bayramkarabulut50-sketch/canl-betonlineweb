@@ -138,7 +138,14 @@ async function runFetchCycle() {
   }
 
   const merged = mergeAdapterResults(results);
-  const live   = merged.filter(m => m.match_live === '1' && m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
+  // v11.19: impossible count guard on merged result before serving
+  let live = merged.filter(m => m.match_live === '1' && m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
+  if (live.length > 200) {
+    log(`[GUARD] impossible live count ${live.length} — quarantining all provider results`);
+    // Take only matches with explicit minute 1-130 as safety net
+    live = live.filter(m => m.minute != null && m.minute > 0 && m.minute < 130);
+    log(`[GUARD] after strict minute filter: ${live.length} matches`);
+  }
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
     sourceSuccessCounts:counts, liveMatches:live.length,
@@ -353,7 +360,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.18-scraper-network-real-live-fix listening on :${PORT}`);
+  log(`CanliBet scraper service v11.19-stable-architecture listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
