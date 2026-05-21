@@ -9,6 +9,17 @@ and prepare promotion decisions.
 
 ## Run
 
+Free Render Web Service mode:
+
+```bash
+npm start
+```
+
+The backend starts the embedded agent automatically unless
+`CANLIBET_EMBED_AGENT=false`.
+
+Separate worker mode:
+
 ```bash
 cd backend
 node agent/supervisor.js
@@ -21,6 +32,7 @@ CANLIBET_BACKEND_URL=http://localhost:3847
 CANLIBET_AGENT_MODE=active
 CANLIBET_AUTO_PROMOTE=false
 CANLIBET_AGENT_LOOP_MS=60000
+CANLIBET_EMBED_AGENT=true
 ```
 
 ## Agents
