@@ -1,0 +1,16 @@
+CanliBet Backend v11.29 — Signal Readiness + Data Quality Rebuild
+
+Changes:
+- Real-stats signal engine upgraded from v10.97 to v10.98-quality-signal-readiness.
+- Added real-stats MONITOR signal layer for matches with valid statistics but below hard watch/action thresholds.
+- Relaxed only real-stats thresholds for WATCH signals; low-data Flashscore rows still cannot fabricate strong signals.
+- Flashscore basic rows remain visible/coverage-only; no stats = no strong signal.
+- Added monitorReadyMatches, highQualitySignalMatches, lowDataVisibleOnlyMatches, analyzableNoTriggerMatches to dataQualitySummary.
+- signalReadinessClass now distinguishes SIGNAL_READY, MONITOR_READY, ANALYZABLE_NO_TRIGGER, LOW_DATA_VISIBLE_ONLY.
+
+Tests passed:
+- Strong ESPN stats generate signal.
+- Near-trigger ESPN stats become analyzable/monitor-ready, not low-data.
+- Flashscore basic senior rows remain visible but produce no fabricated signal.
+- U17, scheduled and finished matches are rejected.
+- Mixed 8 ESPN stats + 37 Flashscore low-data batch preserves coverage while keeping signalEligibleRatio controlled.
