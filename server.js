@@ -10,6 +10,8 @@
 
 const express = require('express');
 const cors    = require('cors');
+const fs      = require('fs');
+const path    = require('path');
 const { mergeAdapterResults, splitLiveLayers, isStaleRiskMatch, monitorReason, summarizeDataQuality } = require('./normalizer');
 const statsAudit = require('./sources/source_stats_audit');
 
@@ -484,6 +486,55 @@ app.get('/odds', async (req,res) => {
 app.get('/snapshot', async (_,res) => {
   try { const s=await getSnapshot(); res.json({ success:true, ...s }); }
   catch(err) { res.status(200).json({ success:false, matches:[], meta:{}, error:err.message }); }
+});
+
+function readAgentJson(name, fallback = null) {
+  try {
+    const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+app.get('/agents/status', (_, res) => {
+  res.json({
+    success: true,
+    supervisor: readAgentJson('agent-supervisor-state.json', null),
+    sourceHealth: readAgentJson('latest-source-health.json', null),
+    signalCapture: readAgentJson('latest-signal-capture.json', null),
+    learning: readAgentJson('latest-learning.json', null),
+    benchmark: readAgentJson('latest-benchmark.json', null),
+    promotion: readAgentJson('latest-promotion-decision.json', null),
+  });
+});
+
+app.get('/agents/strategy', (_, res) => {
+  res.json({
+    success: true,
+    current: readAgentJson('current-strategy.json', null),
+    candidate: readAgentJson('candidate-strategy.json', null),
+    rollback: readAgentJson('rollback-strategy.json', null),
+  });
+});
+
+app.get('/agents/model', (_, res) => {
+  res.json({
+    success: true,
+    current: readAgentJson('current-model.json', null),
+    candidate: readAgentJson('candidate-model.json', null),
+    rollback: readAgentJson('rollback-model.json', null),
+  });
+});
+
+app.get('/agents/promotion', (_, res) => {
+  res.json({
+    success: true,
+    decision: readAgentJson('latest-promotion-decision.json', null),
+    benchmark: readAgentJson('latest-benchmark.json', null),
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
