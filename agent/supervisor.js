@@ -57,6 +57,10 @@ async function runFastLoop() {
   await runNamed('signal-capture-agent', agents.signalCaptureAgent);
 }
 
+async function runDiscoveryLoop() {
+  await runNamed('source-discovery-agent', agents.sourceDiscoveryAgent);
+}
+
 async function runLearningLoop() {
   await runNamed('learning-agent', agents.learningAgent);
   await runNamed('strategy-mutator-agent', agents.strategyMutatorAgent);
@@ -81,11 +85,13 @@ async function main() {
   });
 
   await runFastLoop();
+  await runDiscoveryLoop();
   await runLearningLoop();
   await runModelLoop();
   await runPromotionLoop();
 
   setInterval(runFastLoop, config.loopMs);
+  setInterval(runDiscoveryLoop, config.sourceHealthMs);
   setInterval(runLearningLoop, config.learningMs);
   setInterval(runModelLoop, config.modelTrainingMs);
   setInterval(runPromotionLoop, config.promotionMs);

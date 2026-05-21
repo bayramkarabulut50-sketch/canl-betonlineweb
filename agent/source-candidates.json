@@ -1,0 +1,58 @@
+[
+  {
+    "id": "espn_all_scoreboard",
+    "provider": "espn_candidate",
+    "type": "json",
+    "url": "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard",
+    "notes": "ESPN global soccer scoreboard candidate."
+  },
+  {
+    "id": "espn_eng1_scoreboard",
+    "provider": "espn_candidate",
+    "type": "json",
+    "url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard",
+    "notes": "ESPN Premier League scoreboard candidate."
+  },
+  {
+    "id": "espn_uefa_champions_scoreboard",
+    "provider": "espn_candidate",
+    "type": "json",
+    "url": "https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard",
+    "notes": "ESPN UEFA Champions League scoreboard candidate."
+  },
+  {
+    "id": "flashscore_mobile_tr",
+    "provider": "flashscore_mobile_candidate",
+    "type": "html",
+    "url": "https://m.flashscore.com.tr/?s=2",
+    "notes": "Public mobile live football page, low-data coverage candidate."
+  },
+  {
+    "id": "flashscore_mobile_global",
+    "provider": "flashscore_mobile_candidate",
+    "type": "html",
+    "url": "https://m.flashscore.com/?s=2",
+    "notes": "Public global mobile live football page, low-data coverage candidate."
+  },
+  {
+    "id": "fotmob_matches",
+    "provider": "fotmob_candidate",
+    "type": "json",
+    "url": "https://www.fotmob.com/api/matches?date={YYYYMMDD}",
+    "notes": "FotMob matches endpoint candidate with date placeholder."
+  },
+  {
+    "id": "openligadb_bl1",
+    "provider": "openligadb_candidate",
+    "type": "json",
+    "url": "https://api.openligadb.de/getmatchdata/bl1",
+    "notes": "OpenLigaDB Bundesliga public endpoint."
+  },
+  {
+    "id": "thesportsdb_livescore",
+    "provider": "thesportsdb_candidate",
+    "type": "json",
+    "url": "https://www.thesportsdb.com/api/v2/json/livescore/soccer",
+    "notes": "TheSportsDB v2 livescore candidate."
+  }
+]

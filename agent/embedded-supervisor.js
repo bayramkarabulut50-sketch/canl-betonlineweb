@@ -60,6 +60,10 @@ async function runFastLoop() {
   await runNamed('signal-capture-agent', agents.signalCaptureAgent);
 }
 
+async function runDiscoveryLoop() {
+  await runNamed('source-discovery-agent', agents.sourceDiscoveryAgent);
+}
+
 async function runLearningLoop() {
   await runNamed('learning-agent', agents.learningAgent);
   await runNamed('strategy-mutator-agent', agents.strategyMutatorAgent);
@@ -87,11 +91,13 @@ function startEmbeddedAgent() {
   });
 
   setTimeout(runFastLoop, 5000);
+  setTimeout(runDiscoveryLoop, 10000);
   setTimeout(runLearningLoop, 15000);
   setTimeout(runModelLoop, 30000);
   setTimeout(runPromotionLoop, 45000);
 
   setInterval(runFastLoop, config.loopMs);
+  setInterval(runDiscoveryLoop, config.sourceHealthMs);
   setInterval(runLearningLoop, config.learningMs);
   setInterval(runModelLoop, config.modelTrainingMs);
   setInterval(runPromotionLoop, config.promotionMs);

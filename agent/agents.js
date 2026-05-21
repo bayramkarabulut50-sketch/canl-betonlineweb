@@ -3,6 +3,8 @@
 const config = require('./config');
 const store = require('./store');
 const { fetchJson } = require('./http');
+const fs = require('fs');
+const path = require('path');
 
 function n(v, fallback = 0) {
   const x = Number(v);
@@ -26,6 +28,155 @@ function isAnalyzable(match) {
   if (n(match.fakeRiskScore) > config.thresholds.maxFakeRiskScore) return false;
   if (match.qualityClass && match.qualityClass !== 'REAL_ANALYZABLE') return false;
   return true;
+}
+
+function todayYyyymmdd() {
+  const d = new Date();
+  return String(d.getUTCFullYear()) +
+    String(d.getUTCMonth() + 1).padStart(2, '0') +
+    String(d.getUTCDate()).padStart(2, '0');
+}
+
+function loadSourceCandidates() {
+  try {
+    const p = path.join(__dirname, 'source-candidates.json');
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_) {
+    return [];
+  }
+}
+
+function countJsonEvents(data) {
+  if (!data || typeof data !== 'object') return 0;
+  const candidates = [
+    data.events,
+    data.matches,
+    data.fixtures,
+    data.data,
+    data.response,
+    data.livescore,
+    data.results
+  ];
+  for (const item of candidates) {
+    if (Array.isArray(item)) return item.length;
+    if (item && typeof item === 'object') {
+      const arr = Object.values(item).find(Array.isArray);
+      if (arr) return arr.length;
+    }
+  }
+  return 0;
+}
+
+function detectLiveHintsFromJson(data) {
+  const txt = JSON.stringify(data || {}).slice(0, 120000).toLowerCase();
+  const liveWords = ['live', 'in_play', 'in-play', 'in progress', 'status_in_progress', '1h', '2h', 'halftime'];
+  const statWords = ['shots', 'corner', 'possession', 'statistics', 'stats', 'xg', 'on target'];
+  const oddsWords = ['odds', 'bookmaker', 'price', 'decimal'];
+  return {
+    hasLiveHints: liveWords.some(w => txt.includes(w)),
+    hasStatHints: statWords.some(w => txt.includes(w)),
+    hasOddsHints: oddsWords.some(w => txt.includes(w))
+  };
+}
+
+function scoreCandidateProbe(candidate, probe) {
+  let score = 0;
+  if (probe.status === 200) score += 30;
+  if (probe.contentType && /json/i.test(probe.contentType)) score += 20;
+  if (probe.eventCount > 0) score += Math.min(25, probe.eventCount);
+  if (probe.hasLiveHints) score += 10;
+  if (probe.hasStatHints) score += 10;
+  if (probe.hasOddsHints) score += 5;
+  if (probe.error) score -= 30;
+  if (probe.status === 403 || probe.status === 429) score -= 50;
+  if (probe.status && probe.status >= 500) score -= 20;
+  return Math.max(0, Math.min(100, score));
+}
+
+async function probeCandidate(candidate) {
+  const url = String(candidate.url || '').replace('{YYYYMMDD}', todayYyyymmdd());
+  const startedAt = Date.now();
+  const result = {
+    id: candidate.id,
+    provider: candidate.provider,
+    type: candidate.type,
+    url,
+    status: null,
+    ok: false,
+    durationMs: 0,
+    contentType: '',
+    eventCount: 0,
+    hasLiveHints: false,
+    hasStatHints: false,
+    hasOddsHints: false,
+    score: 0,
+    recommendation: 'reject',
+    error: null,
+    textPreview: ''
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 18000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: candidate.type === 'html' ? 'text/html,application/xhtml+xml,application/json,*/*' : 'application/json,*/*',
+        'User-Agent': 'CanliBetSourceDiscovery/1.0'
+      }
+    });
+    result.status = res.status;
+    result.ok = res.ok;
+    result.contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    result.textPreview = text.slice(0, 220);
+    if (/json/i.test(result.contentType) || /^[\s{[]/.test(text)) {
+      try {
+        const data = JSON.parse(text);
+        result.eventCount = countJsonEvents(data);
+        Object.assign(result, detectLiveHintsFromJson(data));
+      } catch (_) {
+        result.error = 'json_parse_failed';
+      }
+    } else {
+      const plain = text.toLowerCase();
+      result.eventCount = (plain.match(/\b\d{1,2}'|\bht\b|\blive\b|canli|canlı/g) || []).length;
+      result.hasLiveHints = /live|canli|canlı|ht|1h|2h/.test(plain);
+      result.hasStatHints = /shots|corner|possession|istatistik|statistics/.test(plain);
+      result.hasOddsHints = /odds|oran|bookmaker/.test(plain);
+    }
+  } catch (err) {
+    result.error = err.name === 'AbortError' ? 'timeout' : err.message;
+  } finally {
+    clearTimeout(timer);
+    result.durationMs = Date.now() - startedAt;
+  }
+
+  result.score = scoreCandidateProbe(candidate, result);
+  if (result.score >= 65) result.recommendation = 'adapter_candidate';
+  else if (result.score >= 40) result.recommendation = 'watch_candidate';
+  else if (result.status === 403 || result.status === 429) result.recommendation = 'blocked_do_not_use';
+  return result;
+}
+
+async function sourceDiscoveryAgent() {
+  const candidates = loadSourceCandidates();
+  const probes = [];
+  for (const candidate of candidates) {
+    probes.push(await probeCandidate(candidate));
+  }
+  const ranked = probes.slice().sort((a, b) => b.score - a.score);
+  const report = {
+    agent: 'source-discovery-agent',
+    tested: probes.length,
+    adapterCandidates: ranked.filter(x => x.recommendation === 'adapter_candidate'),
+    watchCandidates: ranked.filter(x => x.recommendation === 'watch_candidate'),
+    blocked: ranked.filter(x => x.recommendation === 'blocked_do_not_use'),
+    ranked
+  };
+  store.appendJsonl('source-discovery.jsonl', report);
+  store.writeJson('latest-source-discovery.json', report);
+  return report;
 }
 
 async function sourceHealthAgent() {
@@ -306,6 +457,7 @@ function promotionGuardianAgent() {
 }
 
 module.exports = {
+  sourceDiscoveryAgent,
   sourceHealthAgent,
   signalCaptureAgent,
   learningAgent,
