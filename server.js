@@ -503,6 +503,7 @@ app.get('/agents/status', (_, res) => {
   res.json({
     success: true,
     supervisor: readAgentJson('agent-supervisor-state.json', null),
+    sourceDiscovery: readAgentJson('latest-source-discovery.json', null),
     sourceHealth: readAgentJson('latest-source-health.json', null),
     signalCapture: readAgentJson('latest-signal-capture.json', null),
     learning: readAgentJson('latest-learning.json', null),
