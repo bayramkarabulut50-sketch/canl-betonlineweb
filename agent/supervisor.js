@@ -59,6 +59,7 @@ async function runFastLoop() {
 
 async function runDiscoveryLoop() {
   await runNamed('source-discovery-agent', agents.sourceDiscoveryAgent);
+  await runNamed('source-auto-bind-agent', agents.sourceAutoBindAgent);
 }
 
 async function runLearningLoop() {

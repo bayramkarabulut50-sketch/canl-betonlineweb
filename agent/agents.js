@@ -179,6 +179,128 @@ async function sourceDiscoveryAgent() {
   return report;
 }
 
+function sourceProviderFromCandidate(candidate) {
+  const id = String(candidate.id || '');
+  const provider = String(candidate.provider || '');
+  if (provider.includes('espn') || id.startsWith('espn_')) return 'espn_json';
+  if (provider.includes('flashscore_mobile') || id.includes('flashscore_mobile')) return 'flashscore_mobile';
+  if (provider.includes('flashscore') || id.includes('flashscore')) return 'flashscore_feed';
+  if (provider.includes('fotmob') || id.includes('fotmob')) return 'fotmob_json';
+  if (provider.includes('openligadb') || id.includes('openligadb')) return 'openligadb_json';
+  if (provider.includes('thesportsdb') || id.includes('thesportsdb')) return 'thesportsdb_json';
+  if (provider.includes('aiscore') || id.includes('aiscore')) return 'aiscore_json';
+  return null;
+}
+
+function sourceAutoBindAgent() {
+  const discovery = store.readJson('latest-source-discovery.json', null);
+  const previous = store.readJson('source-bindings.json', {
+    enabledProviders: [],
+    quarantinedProviders: [],
+    disabledProviders: [],
+    candidateSources: [],
+    decisions: []
+  });
+
+  const enabled = new Set(previous.enabledProviders || []);
+  const quarantined = new Set(previous.quarantinedProviders || []);
+  const disabled = new Set(previous.disabledProviders || []);
+  const decisions = [];
+
+  if (!discovery) {
+    const empty = Object.assign({}, previous, {
+      updatedAt: new Date().toISOString(),
+      lastDecision: 'no_discovery_report'
+    });
+    store.writeJson('source-bindings.json', empty);
+    return empty;
+  }
+
+  for (const candidate of discovery.ranked || []) {
+    const provider = sourceProviderFromCandidate(candidate);
+    if (!provider) {
+      decisions.push({
+        sourceId: candidate.id,
+        action: 'needs_adapter',
+        reason: 'unknown_provider_mapping',
+        score: candidate.score
+      });
+      continue;
+    }
+
+    if (candidate.recommendation === 'blocked_do_not_use' || candidate.status === 403 || candidate.status === 429) {
+      enabled.delete(provider);
+      quarantined.add(provider);
+      decisions.push({
+        sourceId: candidate.id,
+        provider,
+        action: 'quarantine_provider',
+        reason: candidate.status === 403 || candidate.status === 429 ? 'blocked_or_rate_limited' : 'blocked_candidate',
+        score: candidate.score,
+        status: candidate.status
+      });
+      continue;
+    }
+
+    if (candidate.recommendation === 'adapter_candidate' && candidate.score >= 65) {
+      if (!disabled.has(provider)) {
+        quarantined.delete(provider);
+        enabled.add(provider);
+        decisions.push({
+          sourceId: candidate.id,
+          provider,
+          action: 'enable_provider',
+          reason: 'healthy_candidate',
+          score: candidate.score,
+          eventCount: candidate.eventCount,
+          hasLiveHints: candidate.hasLiveHints,
+          hasStatHints: candidate.hasStatHints,
+          hasOddsHints: candidate.hasOddsHints
+        });
+      }
+      continue;
+    }
+
+    if (candidate.recommendation === 'watch_candidate') {
+      decisions.push({
+        sourceId: candidate.id,
+        provider,
+        action: 'watch_only',
+        reason: 'candidate_not_strong_enough',
+        score: candidate.score,
+        eventCount: candidate.eventCount
+      });
+    }
+  }
+
+  const bindings = {
+    updatedAt: new Date().toISOString(),
+    mode: config.mode,
+    enabledProviders: Array.from(enabled),
+    quarantinedProviders: Array.from(quarantined),
+    disabledProviders: Array.from(disabled),
+    candidateSources: (discovery.adapterCandidates || []).map(c => ({
+      id: c.id,
+      provider: sourceProviderFromCandidate(c),
+      score: c.score,
+      eventCount: c.eventCount,
+      hasLiveHints: c.hasLiveHints,
+      hasStatHints: c.hasStatHints,
+      hasOddsHints: c.hasOddsHints
+    })),
+    decisions: decisions.slice(-100)
+  };
+
+  store.writeJson('source-bindings.json', bindings);
+  store.appendJsonl('source-bindings.jsonl', {
+    agent: 'source-auto-bind-agent',
+    enabledProviders: bindings.enabledProviders,
+    quarantinedProviders: bindings.quarantinedProviders,
+    decisions: bindings.decisions
+  });
+  return bindings;
+}
+
 async function sourceHealthAgent() {
   const health = await fetchJson(`${config.backendBaseUrl}/health`, 15000);
   const live = await fetchJson(`${config.backendBaseUrl}/live?force=true`, 45000);
@@ -458,6 +580,7 @@ function promotionGuardianAgent() {
 
 module.exports = {
   sourceDiscoveryAgent,
+  sourceAutoBindAgent,
   sourceHealthAgent,
   signalCaptureAgent,
   learningAgent,

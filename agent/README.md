@@ -39,6 +39,7 @@ CANLIBET_EMBED_AGENT=true
 
 - `source-health-agent`: checks `/health` and `/live?force=true`, tracks provider health.
 - `source-discovery-agent`: probes candidate public sources and ranks them for adapter work.
+- `source-auto-bind-agent`: enables healthy known providers and quarantines blocked ones.
 - `signal-capture-agent`: stores analyzable, stats-backed signals in `data/signals.jsonl`.
 - `learning-agent`: reads settled outcomes and finds weak/strong patterns.
 - `strategy-mutator-agent`: creates `candidate-strategy.json` from learning output.
@@ -56,6 +57,7 @@ The most important files are:
 - `outcomes.jsonl`
 - `source-health.jsonl`
 - `source-discovery.jsonl`
+- `source-bindings.json`
 - `latest-learning.json`
 - `candidate-strategy.json`
 - `candidate-model.json`
