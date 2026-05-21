@@ -91,6 +91,25 @@ const _sourceFailReasons   = {};
 
 function isCacheValid() { return _snapshot && Date.now() < _snapshot.expiresAt; }
 
+function readAgentDataJson(name, fallback = null) {
+  try {
+    const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function getActiveLiveAdapters() {
+  const bindings = readAgentDataJson('source-bindings.json', {});
+  const disabled = new Set([...(bindings.disabledProviders || []), ...(bindings.quarantinedProviders || [])]);
+  const active = LIVE_ADAPTERS.filter(adapter => !disabled.has(adapter.provider));
+  if (active.length === 0) return LIVE_ADAPTERS;
+  return active;
+}
+
 
 function buildProviderReport(results, live, signalEligible, rejectedProviderCounts) {
   const report = {};
@@ -143,8 +162,9 @@ function buildCoverageEstimate(rawTotal, visibleCount, rejectedReasons) {
 async function runFetchCycle() {
   const t0 = Date.now();
   const tried = [], counts = {};
+  const activeLiveAdapters = getActiveLiveAdapters();
 
-  const adapterTasks = LIVE_ADAPTERS.map(async (adapter) => {
+  const adapterTasks = activeLiveAdapters.map(async (adapter) => {
     const name = adapter.provider;
 
     if (name === 'mock' && DISABLE_MOCK_FALLBACK) {
@@ -280,7 +300,8 @@ async function runFetchCycle() {
       policy:'NO_BROWSER_NO_PROXY_NO_IP_ROTATION_NO_SOFASCORE',
       apiKeyProviders:'REMOVED_BY_POLICY',
       coverageReality: 'Coverage depends on scraper/public HTTP sources only. ESPN is quality/stats; Flashscore mobile/x-feed provide coverage; extra non-IP-sensitive probes can be added after audit.'
-    }
+    },
+    agentSourceBindings: readAgentDataJson('source-bindings.json', null)
   };
 
   _snapshot = { matches:live, allMatches:merged, meta, fetchedAt:t0, expiresAt:t0+CACHE_TTL_MS };
@@ -489,14 +510,7 @@ app.get('/snapshot', async (_,res) => {
 });
 
 function readAgentJson(name, fallback = null) {
-  try {
-    const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
-    const file = path.join(dir, name);
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (_) {
-    return fallback;
-  }
+  return readAgentDataJson(name, fallback);
 }
 
 app.get('/agents/status', (_, res) => {
@@ -504,6 +518,7 @@ app.get('/agents/status', (_, res) => {
     success: true,
     supervisor: readAgentJson('agent-supervisor-state.json', null),
     sourceDiscovery: readAgentJson('latest-source-discovery.json', null),
+    sourceBindings: readAgentJson('source-bindings.json', null),
     sourceHealth: readAgentJson('latest-source-health.json', null),
     signalCapture: readAgentJson('latest-signal-capture.json', null),
     learning: readAgentJson('latest-learning.json', null),
