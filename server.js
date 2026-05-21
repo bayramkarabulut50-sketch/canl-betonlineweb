@@ -540,6 +540,15 @@ app.get('/agents/promotion', (_, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
   log(`CanliBet scraper service v11.30-intelligence-rebuild listening on :${PORT}`);
+  if (String(process.env.CANLIBET_EMBED_AGENT || 'true').toLowerCase() !== 'false') {
+    try {
+      if (!process.env.CANLIBET_BACKEND_URL) process.env.CANLIBET_BACKEND_URL = `http://localhost:${PORT}`;
+      require('./agent/embedded-supervisor').startEmbeddedAgent();
+      log('Embedded agent supervisor started');
+    } catch (err) {
+      log('[ERROR] Embedded agent supervisor failed', { error: err.message });
+    }
+  }
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 
