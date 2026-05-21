@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.26-signal-visibility-audit-summary
+ * server.js — CanliBet Scraper Service v11.27-coverage-expansion-mobile-flashscore
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -25,6 +25,7 @@ const ENABLE_AISCORE    = process.env.ENABLE_AISCORE_JSON_SOURCE   !== 'false'; 
 const ENABLE_THESPORTSDB = process.env.ENABLE_THESPORTSDB_JSON_SOURCE !== 'false'; // default on
 const ENABLE_OPENLIGADB  = process.env.ENABLE_OPENLIGADB_JSON_SOURCE  !== 'false'; // default on
 const ENABLE_FLASHSCORE  = process.env.ENABLE_FLASHSCORE_FEED_SOURCE  !== 'false'; // default on, public x-feed scraper
+const ENABLE_FLASHSCORE_MOBILE = process.env.ENABLE_FLASHSCORE_MOBILE_SOURCE !== 'false'; // default on, public mobile HTML scraper
 // v11.01: production safety — never publish demo/mock matches unless explicitly disabled.
 const DISABLE_MOCK_FALLBACK = String(process.env.DISABLE_MOCK_FALLBACK || 'true').toLowerCase() === 'true';
 
@@ -56,15 +57,17 @@ const aiscoreMod  = require('./sources/source_aiscore_json');
 const thesportsdbMod = require('./sources/source_thesportsdb_json');
 const openligadbMod  = require('./sources/source_openligadb_json');
 const flashscoreMod  = require('./sources/source_flashscore');
+const flashscoreMobileMod = require('./sources/source_flashscore_mobile');
 const mockMod     = require('./sources/source_mock');
 
 // Audit always includes all JSON probes
-AUDIT_ADAPTERS.push(espnMod, flashscoreMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
+AUDIT_ADAPTERS.push(espnMod, flashscoreMod, flashscoreMobileMod, fotmobMod, aiscoreMod, thesportsdbMod, openligadbMod);
 // v11.10: SofaScore intentionally excluded from audit/live by policy.
 
 // Live adapters — v11.11 ESPN-first/no-IP-sensitive coverage.
 // SofaScore removed. Primary live source is ESPN public JSON.
 if (ENABLE_ESPN)    { LIVE_ADAPTERS.push(espnMod);    log('Adapter: espn_json (HTTP-only, primary)'); }
+if (ENABLE_FLASHSCORE_MOBILE) { LIVE_ADAPTERS.push(flashscoreMobileMod); log('Adapter: flashscore_mobile (HTTP-only public mobile HTML live page)'); }
 if (ENABLE_FLASHSCORE) { LIVE_ADAPTERS.push(flashscoreMod); log('Adapter: flashscore_feed (HTTP-only public x-feed)'); }
 // v11.15: API-key providers intentionally removed. Scraper-only policy.
 if (ENABLE_FOTMOB)  { LIVE_ADAPTERS.push(fotmobMod);  log('Adapter: fotmob_json (HTTP-only)'); }
@@ -190,10 +193,10 @@ async function runFetchCycle() {
     .filter(m => m.source !== 'mock' && String(m.match_id || '').indexOf('mock_') !== 0);
   let finalSignalEligible = layerSplit.signalEligibleMatches.filter(m => live.includes(m) || live.some(x => x.match_id === m.match_id));
   let impossibleCountGuard = null;
-  if (live.length > 60) {
-    impossibleCountGuard = `suspicious_visible_count:${live.length}>60`;
+  if (live.length > 90) {
+    impossibleCountGuard = `suspicious_visible_count:${live.length}>90`;
     const statsRich = live.filter(m => m.hasStats || (m.signalCount || 0) > 0 || m.source === 'espn' || m.source === 'espn_json').length;
-    const targetMax = Math.max(24, Math.min(45, statsRich * 4 + 20));
+    const targetMax = Math.max(40, Math.min(80, statsRich * 6 + 36));
     log(`[GUARD] suspicious visible live count ${live.length} — final calibrated cap ${targetMax}`);
     live = live
       .filter(m => (m.validationScore || 0) >= 45 && m.minute != null && m.minute > 0 && m.minute < 130)
@@ -266,7 +269,7 @@ async function runFetchCycle() {
     dataNetwork: {
       policy:'NO_BROWSER_NO_PROXY_NO_IP_ROTATION_NO_SOFASCORE',
       apiKeyProviders:'REMOVED_BY_POLICY',
-      coverageReality: 'Coverage depends on scraper/public HTTP sources only. ESPN is primary; extra non-IP-sensitive scraper probes can be added later after audit.'
+      coverageReality: 'Coverage depends on scraper/public HTTP sources only. ESPN is quality/stats; Flashscore mobile/x-feed provide coverage; extra non-IP-sensitive probes can be added after audit.'
     }
   };
 

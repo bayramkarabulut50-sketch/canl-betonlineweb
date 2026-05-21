@@ -1,5 +1,5 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.26
+ * normalizer.js — CanliBet Scraper Service v11.27
  *
  * Converts any source adapter output → canonical match format.
  * v11.26: signal visibility + counter consistency + audit summary,
@@ -197,13 +197,13 @@ const EXCLUDED_COMPETITION_RE = new RegExp([
   // Never include non-betting / artificial feeds
   '\\bu\\s?1[5-9]\\b','\\bu\\s?2[0-3]\\b','\\bu15\\b','\\bu16\\b','\\bu17\\b','\\bu18\\b','\\bu19\\b','\\bu20\\b','\\bu21\\b','\\bu23\\b',
   'u-17','u-19','under\\s?17','under\\s?19','youth','junior','juniors','academy','academia',
-  'reserves?','reserve\\s?league','b team','women','womens','women\\s','female','feminine','\\bii\\b','\\b2\\b',
+  'reserves?','reserve\\s?league','b team','women','womens','women\\s','female','feminine',
   'friendly','friendlies','club friendly','international friendly','pre-season','preseason',
   'virtual','esoccer','e-soccer','cyber','simulated','simulation','fifa\\s?e',
   'school','college','university','student',
-  'state league','state league 1','state league 2','regional league','county league','amateur league',
+  'state league','state league 1','state league 2','county league','amateur league',
   'npl queensland','npl victoria','npl western australia','npl nsw','npl south australia',
-  'play offs','play-off','playoffs','relegation group','promotion group',
+  'relegation group','promotion group',
   'ю17','ю19','молод','младеж','юнош'
 ].join('|'), 'i');
 
@@ -219,7 +219,7 @@ const TRUSTED_FLASH_COMPETITION_RE = new RegExp([
   'pro league','jupiler','major league soccer','mls','us open cup','nwsl',
   'champions league','europa league','conference league','libertadores','sudamericana',
   'brasileiro','serie a','primera division','primera división','liga mx',
-  'allsvenskan','eliteserien','superliga','a-league','j1 league','k league','saudi pro league'
+  'allsvenskan','eliteserien','superliga','a-league','j1 league','k league','saudi pro league','2. liga','1. deild','regionalliga','superettan','division 2','division 2, avd','stars league','professional league','elite one','vysshaya liga','efbet league','azadegan league','isl','i-league','kupa','cup','landspokal','super ligi','premier lig','first league','1. profesyonel ligi'
 ].join('|'), 'i');
 
 function isFlashscoreSource(m) {
@@ -234,9 +234,8 @@ function isTrustedFlashCompetition(m) {
 
 const NOISY_FLASH_COMPETITION_RE = new RegExp([
   'state league','npl queensland','npl victoria','npl western australia','npl nsw','npl south australia',
-  'regional','county','amateur','lower league','reserve','reserves','youth','u17','u18','u19','u20','u21','u23',
-  'women','friendly','play offs','play-off','qualification - play off','relegation','promotion',
-  'bundesliga - conference league play offs','conference league play offs'
+  'county','amateur','lower league','reserve','reserves','youth','u17','u18','u19','u20','u21','u23',
+  'women','friendly'
 ].join('|'), 'i');
 
 function isNoisyFlashCompetition(m) {
@@ -646,7 +645,7 @@ function matchQualityScore(m) {
   const providerPriority = {
     espn_json: 90, espn: 90,
     fotmob_json: 75, fotmob: 75,
-    flashscore_feed: 60, flashscore: 60,
+    flashscore_mobile: 68, flashscore_feed: 60, flashscore: 60,
     thesportsdb_json: 50, openligadb_json: 45,
     aiscore_json: 35, mock: 0,
   };
@@ -725,9 +724,9 @@ function mergeAdapterResults(adapterResults) {
   const basicFlashCount = merged.filter(m => isFlashscoreBasicRow(m)).length;
   let dynamicMaxVisible = 60;
   if (merged.length > 80 && basicFlashCount / Math.max(merged.length,1) > 0.55) {
-    dynamicMaxVisible = Math.max(28, Math.min(55, statsRichCount * 5 + 24));
+    dynamicMaxVisible = Math.max(38, Math.min(85, statsRichCount * 6 + 36));
   }
-  if (merged.length > 160) dynamicMaxVisible = Math.min(dynamicMaxVisible, 48);
+  if (merged.length > 180) dynamicMaxVisible = Math.min(dynamicMaxVisible, 70);
 
   let capped = 0;
   if (merged.length > dynamicMaxVisible) {
