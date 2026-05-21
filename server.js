@@ -1,5 +1,5 @@
 /**
- * server.js — CanliBet Scraper Service v11.27-coverage-expansion-mobile-flashscore
+ * server.js — CanliBet Scraper Service v11.28-data-quality-hardening
  *
  * Scraper-only data network.
  * No paid/API-key provider connections. No API-Sports. No API-Football.
@@ -10,7 +10,7 @@
 
 const express = require('express');
 const cors    = require('cors');
-const { mergeAdapterResults, splitLiveLayers, isStaleRiskMatch, monitorReason } = require('./normalizer');
+const { mergeAdapterResults, splitLiveLayers, isStaleRiskMatch, monitorReason, summarizeDataQuality } = require('./normalizer');
 const statsAudit = require('./sources/source_stats_audit');
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -208,6 +208,12 @@ async function runFetchCycle() {
   const providerReport = buildProviderReport(results, live, finalSignalEligible, layerSplit.rejectedProviderCounts);
   const coverageEstimate = buildCoverageEstimate(merged.length + ((mergeAdapterResults.lastDebug && mergeAdapterResults.lastDebug.duplicateRemoved) || 0), live.length, layerSplit.rejectedReasons);
   const visibleVsSignalEligibleComparison = { visible: live.length, signalEligible: finalSignalEligible.length, lowDataVisible: layerSplit.lowDataVisibleCount, signalStarvation: live.length > 8 && finalSignalEligible.length === 0 };
+  const dataQualitySummary = summarizeDataQuality(live);
+  const providerQualityReport = Object.fromEntries(Object.entries(providerReport).map(([k,v]) => [k, Object.assign({}, v, {
+    statsCoverageRatio: v.visible ? Number((v.statsCoverage / v.visible).toFixed(3)) : 0,
+    signalEligibleRatio: v.visible ? Number((v.signalEligible / v.visible).toFixed(3)) : 0,
+    lowDataRatio: v.visible ? Number((v.lowDataVisible / v.visible).toFixed(3)) : 0,
+  })]));
 
   const meta   = {
     fetchedAt:t0, durationMs:Date.now()-t0, sourcesTried:tried,
@@ -258,6 +264,8 @@ async function runFetchCycle() {
     providerReport,
     coverageEstimate,
     visibleVsSignalEligibleComparison,
+    dataQualitySummary,
+    providerQualityReport,
     signalStarvationDiagnostics: visibleVsSignalEligibleComparison.signalStarvation ? { message:'visible live exists but signal layer is empty', gates:['stats','pressure','tempo','confidence','odds'] } : null,
     canonicalQuality: mergeAdapterResults.lastDebug || {},
     pipelineHealth: Object.assign({}, layerSplit.health, {
@@ -334,7 +342,7 @@ async function runAudit() {
     topRejectReasons: sources.reduce((acc,s)=>{ (s.rejectedReasons?Object.entries(s.rejectedReasons):[]).forEach(([r,c])=>{ acc[r]=(acc[r]||0)+Number(c||0); }); return acc; },{})
   };
 
-  if (_snapshot && _snapshot.meta) { auditSummary.lastLiveSummary = { visibleLive:_snapshot.meta.visibleLiveMatchesCount||0, signalEligible:_snapshot.meta.signalEligibleMatchesCount||0, watchSignals:_snapshot.meta.watchSignalsCount||0, staleRiskCount:_snapshot.meta.staleRiskCount||0, lowDataCount:_snapshot.meta.lowDataVisibleCount||0, monitorReasons:_snapshot.meta.monitorReasons||{}, providerReport:_snapshot.meta.providerReport||{} }; }
+  if (_snapshot && _snapshot.meta) { auditSummary.lastLiveSummary = { visibleLive:_snapshot.meta.visibleLiveMatchesCount||0, signalEligible:_snapshot.meta.signalEligibleMatchesCount||0, watchSignals:_snapshot.meta.watchSignalsCount||0, staleRiskCount:_snapshot.meta.staleRiskCount||0, lowDataCount:_snapshot.meta.lowDataVisibleCount||0, dataQualitySummary:_snapshot.meta.dataQualitySummary||{}, providerQualityReport:_snapshot.meta.providerQualityReport||{}, monitorReasons:_snapshot.meta.monitorReasons||{}, providerReport:_snapshot.meta.providerReport||{} }; }
   _lastAuditResult = { testedAt, sources, bestCandidates, summary:auditSummary };
   return _lastAuditResult;
 }
@@ -346,7 +354,7 @@ app.use(express.json());
 if (LOG_REQUESTS) app.use((req,_,next)=>{ log(`${req.method} ${req.path}`); next(); });
 
 app.get('/health', (_,res) => res.json({
-  status:'ok', version:'v11.26-signal-visibility-audit-summary', uptime:Math.round(process.uptime()),
+  status:'ok', version:'v11.28-data-quality-hardening', uptime:Math.round(process.uptime()),
   cacheValid:isCacheValid(), cacheAge:_snapshot?Math.round((Date.now()-_snapshot.fetchedAt)/1000)+'s':null,
   enabledSources: {
     espn_json:    ENABLE_ESPN,
@@ -411,6 +419,8 @@ app.get('/live', async (req,res) => {
       canonicalQuality:       s.meta.canonicalQuality       || {},
       validationRejectDebug:  s.meta.validationRejectDebug  || {},
       summary: { rawTotal:s.meta.coverageEstimate?.rawTotal||0, visibleLive:s.meta.visibleLiveMatchesCount||0, signalEligible:s.meta.signalEligibleMatchesCount||0, watchSignals:s.meta.watchSignalsCount||0, actionableSignals:s.meta.actionableSignals||0, rejectedTotal:s.meta.coverageEstimate?.rejectedTotal||0, duplicateRemoved:s.meta.duplicateRemoved||0, staleRiskCount:s.meta.staleRiskCount||0, lowDataCount:s.meta.lowDataVisibleCount||0, monitorMatches:s.meta.monitorMatchesCount||0, topRejectReasons:s.meta.coverageEstimate?.topRejectReasons||[], providerBreakdown:s.meta.providerReport||{}, coverageHealth:s.meta.coverageEstimate?.expectedRangeStatus||'unknown', signalHealth:(s.meta.visibleVsSignalEligibleComparison?.signalStarvation?'starvation':'ok') },
+      dataQualitySummary: s.meta.dataQualitySummary || {},
+      providerQualityReport: s.meta.providerQualityReport || {},
       providerReport: s.meta.providerReport || {},
       staleRiskCount: s.meta.staleRiskCount || 0,
       lowDataVisibleCount: s.meta.lowDataVisibleCount || 0,
@@ -478,7 +488,7 @@ app.get('/snapshot', async (_,res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
-  log(`CanliBet scraper service v11.26-signal-visibility-audit-summary listening on :${PORT}`);
+  log(`CanliBet scraper service v11.28-data-quality-hardening listening on :${PORT}`);
   try { await runFetchCycle(); log('Initial fetch complete'); }
   catch(err) { log('[ERROR] Initial fetch (non-fatal)', { error:err.message }); }
 

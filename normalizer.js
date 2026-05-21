@@ -1,5 +1,5 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.27
+ * normalizer.js — CanliBet Scraper Service v11.28
  *
  * Converts any source adapter output → canonical match format.
  * v11.26: signal visibility + counter consistency + audit summary,
@@ -326,6 +326,120 @@ function monitorReason(m) {
   return 'monitor';
 }
 
+
+function computeFakeRisk(m) {
+  const reasons = [];
+  let risk = 0;
+  const statusClass = m && (m._statusClass || classifyStatus(m.match_status));
+  const minute = normMinute(m && m.minute);
+
+  if (!m || m.match_live !== '1') { risk += 70; reasons.push('not_live'); }
+  if (statusClass === 'final' || statusClass === 'scheduled') { risk += 90; reasons.push('non_live_status'); }
+  if (hasBrokenTeamNames(m || {})) { risk += 45; reasons.push('invalid_team_names'); }
+  if (hasExcludedCompetitionText(m || {})) { risk += 60; reasons.push('excluded_competition'); }
+  if (minute == null) { risk += 35; reasons.push('missing_minute'); }
+  if (isFlashscoreSource(m || {}) && isFlashscoreBasicRow(m || {})) {
+    risk += 12; reasons.push('flashscore_basic_no_stats');
+    if (!isTrustedFlashCompetition(m || {}) && !hasSeniorProfessionalSignal(m || {})) { risk += 35; reasons.push('untrusted_flash_competition'); }
+    if (isNoisyFlashCompetition(m || {})) { risk += 45; reasons.push('noisy_flash_competition'); }
+    if (hasMostlyNonLatinText(m || {})) { risk += 30; reasons.push('non_latin_flash_basic'); }
+  }
+  if (!m?.hasStats && !m?.hasOdds) { risk += 10; reasons.push('no_stats_no_odds'); }
+  if (isStaleRiskMatch(m || {})) { risk += 18; reasons.push('stale_risk_90_plus'); }
+
+  risk = Math.max(0, Math.min(100, Math.round(risk)));
+  return { fakeRiskScore:risk, fakeRiskReasons:reasons };
+}
+
+function computeDataQualityClass(m) {
+  const fake = computeFakeRisk(m);
+  const validation = Number(m && m.validationScore) || 0;
+  const reliability = Number(m && m.dataReliabilityScore) || 0;
+  const hasSignal = !!(m && ((m.signalCount || 0) > 0 || m.topSignal));
+  const hasStats = !!(m && m.hasStats);
+
+  let qualityClass = 'RISKY_LOW_CONFIDENCE';
+  let signalReadinessClass = 'MONITOR_ONLY';
+
+  if (!m || m.match_live !== '1' || m.qualityRejected || validation < 35 || fake.fakeRiskScore >= 70) {
+    qualityClass = 'REJECTED_FAKE_OR_NOISY';
+    signalReadinessClass = 'REJECTED';
+  } else if (hasStats && reliability >= 55 && validation >= 70) {
+    qualityClass = 'REAL_ANALYZABLE';
+    signalReadinessClass = hasSignal ? 'SIGNAL_READY' : 'ANALYZABLE_NO_TRIGGER';
+  } else if (hasSignal && validation >= 55) {
+    qualityClass = 'REAL_ANALYZABLE';
+    signalReadinessClass = 'SIGNAL_READY';
+  } else if (!hasStats && validation >= 50 && fake.fakeRiskScore < 45) {
+    qualityClass = 'REAL_LOW_DATA';
+    signalReadinessClass = 'LOW_DATA_VISIBLE_ONLY';
+  } else if (validation >= 45 && fake.fakeRiskScore < 60) {
+    qualityClass = 'RISKY_LOW_CONFIDENCE';
+    signalReadinessClass = 'MONITOR_ONLY';
+  }
+
+  return Object.assign({ qualityClass, signalReadinessClass }, fake);
+}
+
+function summarizeDataQuality(matches) {
+  const arr = Array.isArray(matches) ? matches : [];
+  const summary = {
+    totalVisible: arr.length,
+    realAnalyzable:0,
+    realLowData:0,
+    riskyLowConfidence:0,
+    rejectedFakeOrNoisy:0,
+    espnStatsMatches:0,
+    mergedMatches:0,
+    flashscoreOnlyMatches:0,
+    lowDataMatches:0,
+    signalEligibleMatches:0,
+    signalReadyMatches:0,
+    fakeRiskHigh:0,
+    fakeRiskMedium:0,
+    statsCoverageRatio:0,
+    signalEligibleRatio:0,
+    qualityScore:0,
+    classes:{},
+    providers:{},
+    topFakeRiskReasons:{},
+  };
+  for (const m of arr) {
+    const q = m.qualityClass || 'UNKNOWN';
+    summary.classes[q] = (summary.classes[q] || 0) + 1;
+    if (q === 'REAL_ANALYZABLE') summary.realAnalyzable++;
+    else if (q === 'REAL_LOW_DATA') summary.realLowData++;
+    else if (q === 'RISKY_LOW_CONFIDENCE') summary.riskyLowConfidence++;
+    else if (q === 'REJECTED_FAKE_OR_NOISY') summary.rejectedFakeOrNoisy++;
+
+    const p = m._mergeProvider || m.source || 'unknown';
+    summary.providers[p] = summary.providers[p] || { visible:0, stats:0, lowData:0, signalEligible:0, risky:0 };
+    summary.providers[p].visible++;
+    if (m.hasStats) summary.providers[p].stats++;
+    else summary.providers[p].lowData++;
+    if (m.isSignalEligible || isSignalEligibleMatch(m)) summary.providers[p].signalEligible++;
+    if (q === 'RISKY_LOW_CONFIDENCE') summary.providers[p].risky++;
+
+    if ((m.source === 'espn' || m.source === 'espn_json' || m._mergeProvider === 'espn_json') && m.hasStats) summary.espnStatsMatches++;
+    if (Array.isArray(m._mergedProviders) && m._mergedProviders.length > 1) summary.mergedMatches++;
+    if (isFlashscoreSource(m) && !(Array.isArray(m._mergedProviders) && m._mergedProviders.some(x => String(x).includes('espn')))) summary.flashscoreOnlyMatches++;
+    if (!m.hasStats) summary.lowDataMatches++;
+    if (m.isSignalEligible || isSignalEligibleMatch(m)) summary.signalEligibleMatches++;
+    if (m.signalReadinessClass === 'SIGNAL_READY') summary.signalReadyMatches++;
+    if ((m.fakeRiskScore || 0) >= 70) summary.fakeRiskHigh++;
+    else if ((m.fakeRiskScore || 0) >= 45) summary.fakeRiskMedium++;
+    for (const r of (m.fakeRiskReasons || [])) summary.topFakeRiskReasons[r] = (summary.topFakeRiskReasons[r] || 0) + 1;
+  }
+  summary.statsCoverageRatio = arr.length ? Number((arr.filter(m=>m.hasStats).length / arr.length).toFixed(3)) : 0;
+  summary.signalEligibleRatio = arr.length ? Number((summary.signalEligibleMatches / arr.length).toFixed(3)) : 0;
+  // Balanced 0-100 score: rewards analyzable/stats/signal coverage, penalizes risk.
+  summary.qualityScore = Math.max(0, Math.min(100, Math.round(
+    25 + summary.statsCoverageRatio*35 + summary.signalEligibleRatio*25 + (summary.realAnalyzable/Math.max(arr.length,1))*25 - (summary.riskyLowConfidence/Math.max(arr.length,1))*20
+  )));
+  summary.topFakeRiskReasons = Object.entries(summary.topFakeRiskReasons).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([reason,count])=>({reason,count}));
+  return summary;
+}
+
 function isSignalEligibleMatch(m) {
   if (!m || m.match_live !== '1') return false;
   if ((m.validationScore || 0) >= 70 && (m.hasStats || (m.signalCount || 0) > 0)) return true;
@@ -380,6 +494,8 @@ function splitLiveLayers(matches) {
   const oddsCoverageRatio = visibleLiveMatches.length ? visibleLiveMatches.filter(m=>m.hasOdds).length / visibleLiveMatches.length : 0;
   const signalGenerationRate = visibleLiveMatches.length ? visibleLiveMatches.filter(m=>(m.signalCount||0)>0).length / visibleLiveMatches.length : 0;
 
+  const dataQualitySummary = summarizeDataQuality(visibleLiveMatches);
+
   return {
     visibleLiveMatches,
     signalEligibleMatches,
@@ -393,6 +509,7 @@ function splitLiveLayers(matches) {
     staleRiskCount: staleRiskMatches.length,
     monitorMatchesCount: monitorMatches.length,
     monitorReasons,
+    dataQualitySummary,
     health: {
       providerCoverageScore: Math.min(100, visibleLiveMatches.length * 6),
       liveValidationScore: Math.round(visibleVsRawRatio * 100),
@@ -463,7 +580,13 @@ function computeValidation(m) {
     score += 18; reasons.push('flashscore_valid_clock_visible');
   }
 
-  const validationScore = Math.max(0, Math.min(100, Math.round(score)));
+  let validationScore = Math.max(0, Math.min(100, Math.round(score)));
+  // v11.28: coverage rows from Flashscore mobile/x-feed are useful for live count,
+  // but without stats/odds they must not look as reliable as ESPN stats matches.
+  if (isFlashscoreSource(m) && isFlashscoreBasicRow(m)) {
+    const cap = isTrustedFlashCompetition(m) ? 72 : (hasSeniorProfessionalSignal(m) ? 64 : 46);
+    if (validationScore > cap) { validationScore = cap; reasons.push('flashscore_basic_quality_cap_' + cap); }
+  }
   let tier = 'LOW';
   if (validationScore >= 75) tier = 'HIGH';
   else if (validationScore >= 55) tier = 'MEDIUM';
@@ -584,6 +707,14 @@ function makeCanonical(raw, source) {
   canonical.momentumScore = canonical.derived.momentumScore;
   canonical.xgProxy = canonical.derived.xgProxy;
   canonical.transitionReadiness = canonical.derived.transitionReadiness;
+
+  // v11.28: explicit data-quality classification for audit/UI.
+  const qualityClassPack = computeDataQualityClass(canonical);
+  canonical.qualityClass = qualityClassPack.qualityClass;
+  canonical.signalReadinessClass = qualityClassPack.signalReadinessClass;
+  canonical.fakeRiskScore = qualityClassPack.fakeRiskScore;
+  canonical.fakeRiskReasons = qualityClassPack.fakeRiskReasons;
+  canonical.isSignalEligible = isSignalEligibleMatch(canonical);
 
   return canonical;
 }
@@ -775,6 +906,9 @@ module.exports = {
   validationReasonBucket,
   isStaleRiskMatch,
   monitorReason,
+  computeDataQualityClass,
+  computeFakeRisk,
+  summarizeDataQuality,
   flashscoreSeniorVisibleAllowed,
   isNoisyFlashCompetition,
 };
