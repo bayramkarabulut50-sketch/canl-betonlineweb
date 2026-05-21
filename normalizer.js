@@ -1,9 +1,9 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.25
+ * normalizer.js — CanliBet Scraper Service v11.26
  *
  * Converts any source adapter output → canonical match format.
- * v11.25: coverage audit + signal visibility tuning, provider reports,
- * dual-layer visible/signal validation and explainable reject breakdowns.
+ * v11.26: signal visibility + counter consistency + audit summary,
+ * stale-risk detection and monitor layer diagnostics.
  */
 'use strict';
 
@@ -306,6 +306,27 @@ function validationReasonBucket(reasons) {
   return rs[0] || 'unknown';
 }
 
+
+function isStaleRiskMatch(m) {
+  const minute = normMinute(m && m.minute);
+  if (minute == null) return false;
+  if (minute >= 100) return true;
+  if (minute >= 90 && !m.hasStats) return true;
+  // 90+ with no signal and weak data is suspicious but still visible, not rejected.
+  if (minute >= 88 && !m.hasStats && !m.hasOdds && !(m.signalCount > 0)) return true;
+  return false;
+}
+
+function monitorReason(m) {
+  if (!m) return 'unknown';
+  if (isStaleRiskMatch(m)) return 'stale_risk_90_plus';
+  if (!m.hasStats) return 'low_data_no_stats';
+  if ((m.signalCount || 0) <= 0 && m.signalMode === 'REAL_STATS_NO_TRIGGER') return 'real_stats_no_trigger';
+  if ((m.transitionReadiness || 0) < 35) return 'low_transition_readiness';
+  if ((m.pressureScore || 0) < 45 && (m.tempoScore || 0) < 45) return 'low_pressure_tempo';
+  return 'monitor';
+}
+
 function isSignalEligibleMatch(m) {
   if (!m || m.match_live !== '1') return false;
   if ((m.validationScore || 0) >= 70 && (m.hasStats || (m.signalCount || 0) > 0)) return true;
@@ -324,6 +345,9 @@ function splitLiveLayers(matches) {
   const providerCounts = {};
   const signalEligibleProviderCounts = {};
   const lowDataVisible = [];
+  const staleRiskMatches = [];
+  const monitorMatches = [];
+  const monitorReasons = {};
 
   for (const m of (Array.isArray(matches) ? matches : [])) {
     const reasons = Array.isArray(m.validationReasons) ? m.validationReasons : [];
@@ -340,6 +364,12 @@ function splitLiveLayers(matches) {
     const provider = m._mergeProvider || m.source || 'unknown';
     providerCounts[provider] = (providerCounts[provider] || 0) + 1;
     if (!m.hasStats) lowDataVisible.push(m);
+    if (isStaleRiskMatch(m)) staleRiskMatches.push(m);
+    if (!isSignalEligibleMatch(m)) {
+      const mr = monitorReason(m);
+      monitorMatches.push(m);
+      monitorReasons[mr] = (monitorReasons[mr] || 0) + 1;
+    }
     if (isSignalEligibleMatch(m)) {
       signalEligibleMatches.push(m);
       signalEligibleProviderCounts[provider] = (signalEligibleProviderCounts[provider] || 0) + 1;
@@ -361,6 +391,9 @@ function splitLiveLayers(matches) {
     visibleProviderCounts: providerCounts,
     signalEligibleProviderCounts,
     lowDataVisibleCount: lowDataVisible.length,
+    staleRiskCount: staleRiskMatches.length,
+    monitorMatchesCount: monitorMatches.length,
+    monitorReasons,
     health: {
       providerCoverageScore: Math.min(100, visibleLiveMatches.length * 6),
       liveValidationScore: Math.round(visibleVsRawRatio * 100),
@@ -573,6 +606,11 @@ function normalizeMatches(rawMatches, source, { liveOnly = true, minValidationSc
 
     if (liveOnly && m.match_live !== '1') { addReject('not_live'); continue; }
     if (!m.match_hometeam_name || !m.match_awayteam_name) { addReject('missing_team'); continue; }
+    // Hard exclusions always win over score bonuses.
+    if ((m.validationReasons || []).some(r => /excluded_competition|final_status|scheduled_status|completed_true|invalid_team_names/i.test(String(r)))) {
+      addReject(validationReasonBucket(m.validationReasons));
+      continue;
+    }
     if (m.validationScore < minValidationScore) {
       addReject((m.validationReasons || ['quality_low']).find(x => /excluded|scheduled|final|invalid|missing_minute|flashscore/.test(x)) || 'quality_low');
       continue;
@@ -621,8 +659,8 @@ function matchQualityScore(m) {
 }
 
 function canonicalMatchKey(m) {
-  const h = canonicalTeamName(m.match_hometeam_name);
-  const a = canonicalTeamName(m.match_awayteam_name);
+  const h = canonicalTeamName(m.match_hometeam_name).replace(/\s+/g, '');
+  const a = canonicalTeamName(m.match_awayteam_name).replace(/\s+/g, '');
   if (!h || !a) return m.match_id ? 'id:' + m.match_id : '';
   // Team-pair key is intentionally league-agnostic. Provider league labels are
   // inconsistent (e.g. 'Premier League' vs 'English Premier League'), and two
@@ -736,6 +774,8 @@ module.exports = {
   isSignalEligibleMatch,
   splitLiveLayers,
   validationReasonBucket,
+  isStaleRiskMatch,
+  monitorReason,
   flashscoreSeniorVisibleAllowed,
   isNoisyFlashCompetition,
 };
