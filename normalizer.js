@@ -1,5 +1,5 @@
 /**
- * normalizer.js — CanliBet Scraper Service v11.28
+ * normalizer.js — CanliBet Scraper Service v11.30
  *
  * Converts any source adapter output → canonical match format.
  * v11.26: signal visibility + counter consistency + audit summary,
@@ -366,7 +366,9 @@ function computeDataQualityClass(m) {
     signalReadinessClass = 'REJECTED';
   } else if (hasStats && reliability >= 55 && validation >= 70) {
     qualityClass = 'REAL_ANALYZABLE';
-    signalReadinessClass = hasSignal ? 'SIGNAL_READY' : 'ANALYZABLE_NO_TRIGGER';
+    if (hasSignal) signalReadinessClass = (m.signalMode === 'REAL_STATS_MONITOR' ? 'MONITOR_READY' : 'SIGNAL_READY');
+    else if ((Number(m.transitionReadiness)||0) >= 42 || (Number(m.pressureScore)||0) >= 58 || (Number(m.tempoScore)||0) >= 58) signalReadinessClass = 'MONITOR_READY';
+    else signalReadinessClass = 'ANALYZABLE_NO_TRIGGER';
   } else if (hasSignal && validation >= 55) {
     qualityClass = 'REAL_ANALYZABLE';
     signalReadinessClass = 'SIGNAL_READY';
@@ -395,6 +397,10 @@ function summarizeDataQuality(matches) {
     lowDataMatches:0,
     signalEligibleMatches:0,
     signalReadyMatches:0,
+    monitorReadyMatches:0,
+    highQualitySignalMatches:0,
+    lowDataVisibleOnlyMatches:0,
+    analyzableNoTriggerMatches:0,
     fakeRiskHigh:0,
     fakeRiskMedium:0,
     statsCoverageRatio:0,
@@ -426,6 +432,10 @@ function summarizeDataQuality(matches) {
     if (!m.hasStats) summary.lowDataMatches++;
     if (m.isSignalEligible || isSignalEligibleMatch(m)) summary.signalEligibleMatches++;
     if (m.signalReadinessClass === 'SIGNAL_READY') summary.signalReadyMatches++;
+    if (m.signalReadinessClass === 'MONITOR_READY') summary.monitorReadyMatches++;
+    if (m.signalReadinessClass === 'LOW_DATA_VISIBLE_ONLY') summary.lowDataVisibleOnlyMatches++;
+    if (m.signalReadinessClass === 'ANALYZABLE_NO_TRIGGER') summary.analyzableNoTriggerMatches++;
+    if ((m.signalCount || 0) > 0 && m.qualityClass === 'REAL_ANALYZABLE') summary.highQualitySignalMatches++;
     if ((m.fakeRiskScore || 0) >= 70) summary.fakeRiskHigh++;
     else if ((m.fakeRiskScore || 0) >= 45) summary.fakeRiskMedium++;
     for (const r of (m.fakeRiskReasons || [])) summary.topFakeRiskReasons[r] = (summary.topFakeRiskReasons[r] || 0) + 1;
@@ -444,7 +454,7 @@ function isSignalEligibleMatch(m) {
   if (!m || m.match_live !== '1') return false;
   if ((m.validationScore || 0) >= 70 && (m.hasStats || (m.signalCount || 0) > 0)) return true;
   if (m.hasStats && (m.dataReliabilityScore || 0) >= 55 && (m.validationScore || 0) >= 55) return true;
-  if ((m.signalCount || 0) > 0 || m.topSignal) return true;
+  if ((m.signalCount || 0) > 0 || m.topSignal || m.signalMode === 'REAL_STATS_MONITOR') return true;
   return false;
 }
 
@@ -581,7 +591,7 @@ function computeValidation(m) {
   }
 
   let validationScore = Math.max(0, Math.min(100, Math.round(score)));
-  // v11.28: coverage rows from Flashscore mobile/x-feed are useful for live count,
+  // v11.30: coverage rows from Flashscore mobile/x-feed are useful for live count,
   // but without stats/odds they must not look as reliable as ESPN stats matches.
   if (isFlashscoreSource(m) && isFlashscoreBasicRow(m)) {
     const cap = isTrustedFlashCompetition(m) ? 72 : (hasSeniorProfessionalSignal(m) ? 64 : 46);
@@ -708,7 +718,7 @@ function makeCanonical(raw, source) {
   canonical.xgProxy = canonical.derived.xgProxy;
   canonical.transitionReadiness = canonical.derived.transitionReadiness;
 
-  // v11.28: explicit data-quality classification for audit/UI.
+  // v11.30: explicit data-quality classification for audit/UI.
   const qualityClassPack = computeDataQualityClass(canonical);
   canonical.qualityClass = qualityClassPack.qualityClass;
   canonical.signalReadinessClass = qualityClassPack.signalReadinessClass;
@@ -883,6 +893,8 @@ function mergeAdapterResults(adapterResults) {
     providerCounts: merged.reduce((a,m)=>{ const k=m._mergeProvider||m.source||'unknown'; a[k]=(a[k]||0)+1; return a; },{}),
     signalEligibleProviderCounts: layerDebug.signalEligibleProviderCounts,
     pipelineHealth: layerDebug.health,
+    dataQualitySummary: layerDebug.dataQualitySummary,
+    monitorReasons: layerDebug.monitorReasons,
   };
   return merged;
 }

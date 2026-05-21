@@ -1,0 +1,9 @@
+CanliBet Backend v11.30 — Intelligence Rebuild
+
+- Added pressureWaveScore, attackClusterScore, momentumAcceleration, secondHalfUnlockScore, lateDesperationScore and intelligenceScore to derived metrics.
+- Rebuilt transitionReadiness to blend true game-flow intelligence instead of static threshold gates only.
+- Added intelligence-layer signals: ATTACK_CLUSTER_WATCH, SECOND_HALF_UNLOCK, LATE_DESPERATION_WAVE.
+- Loosened stats-backed WATCH thresholds without allowing low-data Flashscore rows to fabricate signals.
+- REAL_LOW_DATA remains visible-only; only real stats matches can generate strong signal intelligence.
+- Added dataQualitySummary to merge debug metadata.
+- Passed syntax and synthetic regression tests: stats-rich matches generate signals; U17/fake rows reject; low-data Flashscore remains visible but signal-blocked.

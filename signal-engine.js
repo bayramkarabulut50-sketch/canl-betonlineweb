@@ -47,6 +47,71 @@ function estimateXGProxy(stats) {
   return clamp(raw, 0, 5);
 }
 
+
+
+function computeGameFlowIntelligence({minute, shots, sot, corners, pressureScore, tempoScore, dominanceScore, xgProxy, totalGoals, scoreDiff, cards}) {
+  // Current-stat based intelligence layer. We do not fake event timelines; instead we
+  // infer pressure waves from live volume density, match phase, and close-score context.
+  const m = clamp(minute, 1, 120);
+  const shotDensity = per90(shots, m);
+  const sotDensity = per90(sot, m);
+  const cornerDensity = per90(corners, m);
+  const closeGameBoost = scoreDiff <= 1 ? 10 : scoreDiff === 2 ? 3 : -8;
+  const earlyPenalty = m < 12 ? -16 : m < 20 ? -6 : 0;
+
+  const attackClusterScore = clamp(
+    sotDensity * 8.5 + cornerDensity * 4.4 + shotDensity * 2.8 + pressureScore * 0.18 + closeGameBoost + earlyPenalty,
+    0,
+    100
+  );
+
+  const pressureWaveScore = clamp(
+    pressureScore * 0.42 + tempoScore * 0.28 + attackClusterScore * 0.22 + Math.min(18, xgProxy * 5.5) + closeGameBoost,
+    0,
+    100
+  );
+
+  // Since a true timeline is not always available, momentum acceleration is a bounded
+  // proxy for "current phase heating up" from event density + match phase.
+  const phaseBoost = (m >= 38 && m <= 45) ? 8 : (m >= 50 && m <= 70) ? 14 : (m >= 71 && m <= 86) ? 10 : 0;
+  const momentumAcceleration = clamp(
+    (pressureScore - 48) * 0.55 + (tempoScore - 45) * 0.35 + sotDensity * 2.3 + cornerDensity * 1.4 + phaseBoost - cards * 0.8,
+    0,
+    100
+  );
+
+  const secondHalfUnlockScore = (m >= 45 && m <= 72)
+    ? clamp(pressureScore * 0.35 + tempoScore * 0.25 + attackClusterScore * 0.22 + Math.min(20, xgProxy * 6) + closeGameBoost, 0, 100)
+    : 0;
+
+  const lateDesperationScore = (m >= 70 && m <= 90)
+    ? clamp(pressureScore * 0.40 + tempoScore * 0.22 + attackClusterScore * 0.24 + (totalGoals <= 2 ? 8 : 0) + closeGameBoost, 0, 100)
+    : 0;
+
+  const intelligenceScore = clamp(
+    pressureWaveScore * 0.32 + attackClusterScore * 0.24 + momentumAcceleration * 0.22 + Math.max(secondHalfUnlockScore, lateDesperationScore) * 0.22,
+    0,
+    100
+  );
+
+  let gameFlowLabel = 'neutral';
+  if (lateDesperationScore >= 72) gameFlowLabel = 'late_desperation';
+  else if (secondHalfUnlockScore >= 72) gameFlowLabel = 'second_half_unlock';
+  else if (attackClusterScore >= 72) gameFlowLabel = 'attack_cluster';
+  else if (pressureWaveScore >= 68) gameFlowLabel = 'pressure_wave';
+  else if (momentumAcceleration >= 65) gameFlowLabel = 'momentum_acceleration';
+
+  return {
+    attackClusterScore: round(attackClusterScore, 1),
+    pressureWaveScore: round(pressureWaveScore, 1),
+    momentumAcceleration: round(momentumAcceleration, 1),
+    secondHalfUnlockScore: round(secondHalfUnlockScore, 1),
+    lateDesperationScore: round(lateDesperationScore, 1),
+    intelligenceScore: round(intelligenceScore, 1),
+    gameFlowLabel
+  };
+}
+
 function computeDataReliability(stats, minute) {
   let score = 0;
   const reasons = [];
@@ -111,13 +176,17 @@ function computeRealStatsSignals(match) {
 
   const xgProxy = estimateXGProxy(stats);
   const reliability = computeDataReliability(stats, minute);
+  const flow = computeGameFlowIntelligence({
+    minute, shots, sot, corners, pressureScore, tempoScore, dominanceScore,
+    xgProxy, totalGoals: homeScore + awayScore, scoreDiff: Math.abs(scoreDiff), cards
+  });
 
   // Confidence ceiling based on data availability.
   const confidenceCeiling = reliability.score < 40 ? 68 : reliability.score < 60 ? 78 : reliability.score < 80 ? 86 : 92;
 
   // Transition readiness: does this match contain enough action to be watched by the frontend?
   const transitionReadiness = clamp(
-    pressureScore * 0.42 + tempoScore * 0.34 + Math.min(100, xgProxy * 22) * 0.24,
+    pressureScore * 0.32 + tempoScore * 0.24 + Math.min(100, xgProxy * 22) * 0.18 + Number(flow.intelligenceScore || 0) * 0.26,
     0,
     confidenceCeiling
   );
@@ -125,7 +194,7 @@ function computeRealStatsSignals(match) {
   const qualityBucket = reliability.score >= 80 ? 'strong' : reliability.score >= 60 ? 'usable' : reliability.score >= 40 ? 'thin' : 'weak';
 
   return {
-    version: '10.97-coverage-balanced-signals',
+    version: '11.30-intelligence-rebuild',
     isRealStatsDerived: !!match?.hasStats,
     dataReliabilityScore: round(reliability.score, 1),
     dataReliabilityBucket: qualityBucket,
@@ -140,7 +209,14 @@ function computeRealStatsSignals(match) {
     cornersPer90: round(cornersPer90, 2),
     confidenceCeiling,
     transitionReadiness: round(transitionReadiness, 1),
-    modelNotes: match?.hasStats ? ['real_stats_active'] : ['no_real_stats'],
+    pressureWaveScore: flow.pressureWaveScore,
+    attackClusterScore: flow.attackClusterScore,
+    momentumAcceleration: flow.momentumAcceleration,
+    secondHalfUnlockScore: flow.secondHalfUnlockScore,
+    lateDesperationScore: flow.lateDesperationScore,
+    intelligenceScore: flow.intelligenceScore,
+    gameFlowLabel: flow.gameFlowLabel,
+    modelNotes: match?.hasStats ? ['real_stats_active', flow.gameFlowLabel].filter(Boolean) : ['no_real_stats'],
   };
 }
 
@@ -155,6 +231,56 @@ function signal(id, market, label, confidence, reasons, extra = {}) {
     reasons,
     ...extra,
   };
+}
+
+
+function addMonitorSignalIfUseful(signals, match, d, ctx) {
+  const minute = ctx.minute;
+  const pressure = ctx.pressure;
+  const tempo = ctx.tempo;
+  const readiness = ctx.readiness;
+  const xgProxy = ctx.xgProxy;
+  const sotPer90 = ctx.sotPer90;
+  const cornersPer90 = ctx.cornersPer90;
+  const intelligence = ctx.intelligence;
+  const pressureWave = ctx.pressureWave;
+  const attackCluster = ctx.attackCluster;
+  const momentumAcceleration = ctx.momentumAcceleration;
+  const reliability = ctx.reliability;
+  const shots = ctx.shots;
+  const sot = ctx.sot;
+  const corners = ctx.corners;
+
+  // Only real stats can become a signal-like monitor. Flashscore/basic low-data
+  // stays visible only; we do not fabricate betting signals from score/minute alone.
+  if (!match || !match.hasStats || reliability < 70) return;
+  if (minute < 8 || minute > 88) return;
+
+  const hasEventVolume = (shots + sot + corners) >= 3 || sot >= 1 || corners >= 2;
+  if (!hasEventVolume) return;
+
+  // Near-trigger stats: good enough to surface as monitor, not as actionable.
+  const nearTrigger = readiness >= 38 || pressure >= 54 || tempo >= 54 || xgProxy >= 0.45 || sotPer90 >= 1.75 || intelligence >= 52 || pressureWave >= 55 || attackCluster >= 55;
+  if (!nearTrigger) return;
+
+  const conf = clamp(
+    38 + readiness * 0.22 + pressure * 0.15 + tempo * 0.10 + Math.min(16, xgProxy * 5) + Math.min(10, sotPer90 * 1.2) + Math.min(6, cornersPer90 * 0.6),
+    48,
+    74
+  );
+  signals.push(signal('ANALYZABLE_MONITOR', 'monitor', 'Analiz izleme adayı', conf, [
+    `readiness=${round(readiness,1)}`,
+    `pressure=${round(pressure,1)}`,
+    `tempo=${round(tempo,1)}`,
+    `xgProxy=${round(xgProxy,2)}`,
+    `intel=${round(intelligence,1)}`,
+  ], {
+    scenario: 'real_stats_monitor',
+    recommendedPanel: 'MONITOR',
+    action: 'MONITOR',
+    signalTier: 'monitor_signal',
+    qualityNote: 'real_stats_near_trigger_not_actionable'
+  }));
 }
 
 function generateRealSignals(match) {
@@ -173,7 +299,16 @@ function generateRealSignals(match) {
   const xgProxy = num(d.xgProxy, 0);
   const sotPer90 = num(d.shotsOnTargetPer90, 0);
   const cornersPer90 = num(d.cornersPer90, 0);
+  const intelligence = num(d.intelligenceScore, 0);
+  const pressureWave = num(d.pressureWaveScore, 0);
+  const attackCluster = num(d.attackClusterScore, 0);
+  const momentumAcceleration = num(d.momentumAcceleration, 0);
+  const secondHalfUnlock = num(d.secondHalfUnlockScore, 0);
+  const lateDesperation = num(d.lateDesperationScore, 0);
   const reliability = num(d.dataReliabilityScore, 0);
+  const shots = Math.max(0, num(stats.shots_total, 0));
+  const sotRaw = Math.max(0, num(stats.shots_on_target, 0));
+  const cornersRaw = Math.max(0, num(stats.corners, 0));
 
   const hasGoodData = match.hasStats && reliability >= 55;
   if (!hasGoodData) {
@@ -188,19 +323,20 @@ function generateRealSignals(match) {
   }
 
   // Goal-pressure signal: high real pressure + tempo; strongest between 25' and 85'.
-  if (minute >= 18 && minute <= 88 && pressure >= 65 && tempo >= 60 && xgProxy >= 0.85) {
-    const conf = readiness * 0.48 + pressure * 0.27 + tempo * 0.15 + Math.min(100, xgProxy * 26) * 0.10;
+  if (minute >= 12 && minute <= 88 && ((pressure >= 62 && tempo >= 52 && xgProxy >= 0.55) || intelligence >= 68 || attackCluster >= 72 || pressureWave >= 72)) {
+    const conf = readiness * 0.34 + pressure * 0.22 + tempo * 0.12 + Math.min(100, xgProxy * 26) * 0.10 + intelligence * 0.22;
     signals.push(signal('GOAL_PRESSURE_SIGNAL', 'goals', 'Goal pressure building', conf, [
       `pressure=${round(pressure,1)}`,
       `tempo=${round(tempo,1)}`,
       `xgProxy=${round(xgProxy,2)}`,
       `SOT/90=${round(sotPer90,2)}`,
+      `intel=${round(intelligence,1)}`,
     ], { scenario: 'goal_pressure', recommendedPanel: conf >= 78 ? 'ACTIONABLE_WATCH' : 'WATCH' }));
   }
 
   // Late goal watch: late minutes + strong pressure, useful for over/next goal monitoring.
-  if (minute >= 55 && minute <= 88 && pressure >= 64 && (tempo >= 58 || sotPer90 >= 3.5)) {
-    const conf = pressure * 0.42 + tempo * 0.24 + sotPer90 * 3.2 + Math.min(12, cornersPer90);
+  if (minute >= 50 && minute <= 90 && ((pressure >= 58 && (tempo >= 48 || sotPer90 >= 2.2)) || lateDesperation >= 62 || intelligence >= 66)) {
+    const conf = pressure * 0.32 + tempo * 0.18 + sotPer90 * 2.8 + Math.min(12, cornersPer90) + lateDesperation * 0.22 + intelligence * 0.12;
     signals.push(signal('LATE_GOAL_ALERT', 'goals', 'Late goal alert', conf, [
       `minute=${minute}`,
       `pressure=${round(pressure,1)}`,
@@ -209,8 +345,38 @@ function generateRealSignals(match) {
     ], { scenario: 'late_goal', recommendedPanel: 'WATCH' }));
   }
 
+
+  // Intelligence layer: these are not fake betting picks; they surface real game-flow patterns
+  // from stats-backed matches so the product does not go blind when classical thresholds miss.
+  if (minute >= 18 && minute <= 82 && attackCluster >= 70 && pressure >= 55) {
+    const conf = clamp(attackCluster * 0.40 + pressureWave * 0.25 + readiness * 0.20 + intelligence * 0.15, 0, 90);
+    signals.push(signal('ATTACK_CLUSTER_WATCH', 'goals', 'Attack cluster forming', conf, [
+      `cluster=${round(attackCluster,1)}`,
+      `pressureWave=${round(pressureWave,1)}`,
+      `SOT/90=${round(sotPer90,2)}`,
+    ], { scenario: 'attack_cluster', recommendedPanel: conf >= 78 ? 'ACTIONABLE_WATCH' : 'WATCH', signalTier: conf >= 78 ? 'strong_signal' : 'monitor_signal' }));
+  }
+
+  if (minute >= 45 && minute <= 72 && secondHalfUnlock >= 66 && scoreDiff <= 1) {
+    const conf = clamp(secondHalfUnlock * 0.42 + pressure * 0.18 + tempo * 0.16 + readiness * 0.14 + intelligence * 0.10, 0, 91);
+    signals.push(signal('SECOND_HALF_UNLOCK', 'goals', 'Second-half unlock pressure', conf, [
+      `unlock=${round(secondHalfUnlock,1)}`,
+      `score=${homeGoals}-${awayGoals}`,
+      `intel=${round(intelligence,1)}`,
+    ], { scenario: 'second_half_unlock', recommendedPanel: conf >= 76 ? 'ACTIONABLE_WATCH' : 'WATCH', signalTier: conf >= 76 ? 'strong_signal' : 'monitor_signal' }));
+  }
+
+  if (minute >= 70 && minute <= 90 && lateDesperation >= 68) {
+    const conf = clamp(lateDesperation * 0.44 + pressure * 0.18 + attackCluster * 0.18 + readiness * 0.12 + intelligence * 0.08, 0, 92);
+    signals.push(signal('LATE_DESPERATION_WAVE', 'goals', 'Late desperation wave', conf, [
+      `late=${round(lateDesperation,1)}`,
+      `pressure=${round(pressure,1)}`,
+      `cluster=${round(attackCluster,1)}`,
+    ], { scenario: 'late_desperation_wave', recommendedPanel: 'WATCH', signalTier: conf >= 80 ? 'strong_signal' : 'monitor_signal' }));
+  }
+
   // Over 1.5 / Over 2.5 style watch signals. These remain signal-only; odds edge is not computed here.
-  if (minute >= 30 && minute <= 82 && totalGoals < 2 && readiness >= 60 && xgProxy >= 0.9) {
+  if (minute >= 25 && minute <= 82 && totalGoals < 2 && ((readiness >= 50 && xgProxy >= 0.58) || intelligence >= 68 || pressureWave >= 70)) {
     const conf = readiness * 0.52 + pressure * 0.22 + tempo * 0.16 + Math.min(100, xgProxy * 25) * 0.10;
     signals.push(signal('OVER_15_WATCH', 'goals', 'Over 1.5 watch', conf, [
       `goals=${totalGoals}`,
@@ -219,7 +385,7 @@ function generateRealSignals(match) {
     ], { line: 'over_15', scenario: 'over15_watch', recommendedPanel: 'WATCH' }));
   }
 
-  if (minute >= 50 && minute <= 84 && totalGoals < 3 && readiness >= 68 && xgProxy >= 1.25) {
+  if (minute >= 48 && minute <= 84 && totalGoals < 3 && ((readiness >= 58 && xgProxy >= 0.9) || lateDesperation >= 72 || intelligence >= 74)) {
     const conf = readiness * 0.50 + pressure * 0.24 + tempo * 0.16 + Math.min(100, xgProxy * 22) * 0.10;
     signals.push(signal('OVER_25_WATCH', 'goals', 'Over 2.5 watch', conf, [
       `goals=${totalGoals}`,
@@ -229,7 +395,7 @@ function generateRealSignals(match) {
   }
 
   // Result pressure is intentionally conservative; only close-score live matches.
-  if (minute >= 55 && scoreDiff <= 1 && Math.abs(num(d.dominanceScore, 0)) >= 28 && pressure >= 65) {
+  if (minute >= 52 && scoreDiff <= 1 && Math.abs(num(d.dominanceScore, 0)) >= 22 && (pressure >= 62 || intelligence >= 70)) {
     const side = num(d.dominanceScore, 0) >= 0 ? 'home' : 'away';
     const conf = clamp(Math.abs(num(d.dominanceScore, 0)) * 0.65 + pressure * 0.25 + readiness * 0.10, 0, 86);
     signals.push(signal('RESULT_PRESSURE_WATCH', 'result', 'Result pressure watch', conf, [
@@ -240,13 +406,23 @@ function generateRealSignals(match) {
   }
 
   // BTTS watch: both teams have scored? Then not useful. Otherwise, high tempo + close score.
-  if (minute >= 35 && minute <= 80 && (homeGoals === 0 || awayGoals === 0) && scoreDiff <= 1 && tempo >= 72 && pressure >= 70) {
+  if (minute >= 30 && minute <= 82 && (homeGoals === 0 || awayGoals === 0) && scoreDiff <= 1 && ((tempo >= 62 && pressure >= 58) || intelligence >= 68)) {
     const conf = tempo * 0.35 + pressure * 0.30 + readiness * 0.20 + Math.min(100, xgProxy * 22) * 0.15;
     signals.push(signal('BTTS_WATCH', 'goals', 'BTTS watch', conf, [
       `score=${homeGoals}-${awayGoals}`,
       `tempo=${round(tempo,1)}`,
       `pressure=${round(pressure,1)}`,
     ], { line: 'btts_yes', scenario: 'btts_watch', recommendedPanel: 'WATCH' }));
+  }
+
+  // If no hard signal fired but the match has real, high-quality stats, surface it as MONITOR.
+  // This fixes the previous dead-zone where 40+ live matches could show 0 signal-like candidates.
+  if (!signals.length) {
+    addMonitorSignalIfUseful(signals, match, d, {
+      minute, pressure, tempo, readiness, xgProxy, sotPer90, cornersPer90,
+      intelligence, pressureWave, attackCluster, momentumAcceleration, reliability,
+      shots, sot: sotRaw, corners: cornersRaw
+    });
   }
 
   // Sort by confidence and keep compact output.
@@ -259,7 +435,7 @@ function generateRealSignals(match) {
     topSignal: top,
     signalCount: signals.length,
     actionabilityScore: round(actionabilityScore, 1),
-    signalMode: signals.length ? 'REAL_STATS_SIGNAL' : 'REAL_STATS_NO_TRIGGER',
+    signalMode: signals.length ? (signals[0] && signals[0].id === 'ANALYZABLE_MONITOR' ? 'REAL_STATS_MONITOR' : 'REAL_STATS_SIGNAL') : 'REAL_STATS_NO_TRIGGER',
     signalBlockReasons: signals.length ? [] : ['thresholds_not_met'],
   };
 }

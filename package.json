@@ -1,7 +1,7 @@
 {
   "name": "canlibet-scraper-service",
-  "version": "11.24.0",
-  "description": "CanliBet backend — calibrated dual-layer live coverage and signal stability",
+  "version": "11.30.0",
+  "description": "CanliBet backend — signal readiness rebuild and data quality hardening",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
