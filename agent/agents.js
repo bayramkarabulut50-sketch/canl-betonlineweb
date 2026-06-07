@@ -613,6 +613,228 @@ function runtimePenalty(featureId, signals) {
   return 0;
 }
 
+function solutionReportFor(featureId, signals) {
+  const reports = {
+    live_coverage: {
+      rootCause: 'Live match count is present, but too many rows are low-data or not real signal candidates.',
+      fixPlan: [
+        'Prefer providers with parsed + visible + stats-backed rows, not only high raw event count.',
+        'Demote sources that only create monitor rows without stats, odds, clock, score, or league confidence.',
+        'Expand ESPN league slugs and bind only candidates that pass parsed/visible quality checks.'
+      ],
+      implementationSteps: [
+        'Add provider quality scoring to source auto-bind decisions.',
+        'Require minimum parsed/visible ratio before enabling a source for prediction.',
+        'Keep weak sources watch-only until they produce reliable match fields.'
+      ],
+      successTarget: `Raise signalEligible/live ratio from ${signals.signalEligibleRatio} to at least 0.15 without increasing rejected rows.`,
+      riskControl: 'Never promote a source only because eventCount is high; require valid score, clock, teams, league, and stats hints.'
+    },
+    source_discovery: {
+      rootCause: 'Discovery finds candidates, but adapter-ready conversion is still shallow.',
+      fixPlan: [
+        'Separate adapter candidates, watch-only candidates, and blocked sources more aggressively.',
+        'Record why a candidate cannot yet be connected.',
+        'Generate a provider-specific adapter checklist for every strong source.'
+      ],
+      implementationSteps: [
+        'Add candidate reason codes and required parser fields.',
+        'Persist adapter specs for healthy JSON sources.',
+        'Quarantine sources that repeatedly need API keys or return empty live data.'
+      ],
+      successTarget: 'Keep at least 3 strong adapter candidates and 0 blocked sources in enabled providers.',
+      riskControl: 'Do not auto-enable HTML sources unless parsing quality is proven.'
+    },
+    stats_coverage: {
+      rootCause: 'Most visible matches do not include usable shots, corners, possession, pressure, or reliability signals.',
+      fixPlan: [
+        'Improve ESPN detail/stat extraction first because it is the healthiest JSON source.',
+        'Reject low-data matches from signal generation instead of displaying them as prediction candidates.',
+        'Normalize stats into one reliability score used by both backend and frontend.'
+      ],
+      implementationSteps: [
+        'Audit source_espn_json detail endpoint fields.',
+        'Map shots, shots on target, corners, possession, attacks, and dangerous attacks where available.',
+        'Raise signal eligibility only when statsCoverage and dataReliabilityScore are both acceptable.'
+      ],
+      successTarget: `Raise stats-backed signal candidates from ${signals.signalEligible} to at least 20% of live matches.`,
+      riskControl: 'Missing stats must become watch-only, not fake pressure or fake confidence.'
+    },
+    odds_coverage: {
+      rootCause: 'Odds availability is weak and synthetic odds can make ROI/value calculations misleading.',
+      fixPlan: [
+        'Mark odds as real, cached, synthetic, or missing.',
+        'Allow value betting calculations only when odds are real or explicitly trusted.',
+        'Show non-odds signals separately from bettable value signals.'
+      ],
+      implementationSteps: [
+        'Add oddsSource/oddsQuality fields to normalized matches.',
+        'Block ROI contribution from synthetic odds.',
+        'Track oddsMatchedCount in health output.'
+      ],
+      successTarget: '0 synthetic odds in ROI and clear separation between signal-only and bettable picks.',
+      riskControl: 'If odds are missing, the system may watch or signal, but must not call it value.'
+    },
+    value_predictions: {
+      rootCause: 'Prediction volume is low because quality gates are strict, but this is better than producing weak picks.',
+      fixPlan: [
+        'Create two layers: monitor signals and actionable value signals.',
+        'Require stronger evidence for actionable signals.',
+        'Use historical hit rate by pattern once settlement data exists.'
+      ],
+      implementationSteps: [
+        'Add reason codes for why a match stayed watch-only.',
+        'Add minimum confidence + reliability + odds quality gate.',
+        'Feed settled pattern performance back into signal thresholds.'
+      ],
+      successTarget: 'Fewer but higher-quality actionable signals with clear watch/action ratio.',
+      riskControl: 'Do not lower thresholds just to increase prediction count.'
+    },
+    settlement: {
+      rootCause: 'Historical predictions are not being closed reliably, so learning has no settled outcomes.',
+      fixPlan: [
+        'Use backend /final-score as first settlement source.',
+        'Retry stale predictions for several days.',
+        'Write every resolved prediction into outcomes.jsonl for learning.'
+      ],
+      implementationSteps: [
+        'Improve final-score matching with team aliases and date window.',
+        'Add settlement result reason: found, not_final_yet, source_missing, ambiguous.',
+        'Append settled win/loss/void records to the agent outcome store.'
+      ],
+      successTarget: `Increase settledSignals from ${signals.settledSignals} to at least 50 before model promotion is allowed.`,
+      riskControl: 'Ambiguous finals must go to review, not auto-win or auto-loss.'
+    },
+    learning_system: {
+      rootCause: 'Learning cannot start because settledSignals is too low.',
+      fixPlan: [
+        'Make settlement feed outcomes into learning storage.',
+        'Group outcomes by market, league, minute band, confidence band, and data quality.',
+        'Only trust patterns after minimum sample size.'
+      ],
+      implementationSteps: [
+        'Connect settled history to outcomes.jsonl.',
+        'Add sample-size guards per pattern group.',
+        'Expose weak/strong patterns in /agents/learning or /agents/status.'
+      ],
+      successTarget: 'At least 50 settled outcomes for basic learning and 200+ for model comparison.',
+      riskControl: 'Never mutate strategy from tiny samples.'
+    },
+    machine_learning: {
+      rootCause: 'There are no training samples yet, so the model trainer can only produce placeholder candidates.',
+      fixPlan: [
+        'Delay model promotion until enough settled outcomes exist.',
+        'Start with calibrated bucket models before complex ML.',
+        'Compare candidate model against current model using holdout metrics.'
+      ],
+      implementationSteps: [
+        'Extract features from settled signals.',
+        'Train confidence buckets by market and data quality.',
+        'Benchmark lift, Brier score, and hit rate before promotion.'
+      ],
+      successTarget: `Raise candidateSamples from ${signals.modelSamples} to at least 200 before promotion.`,
+      riskControl: 'No auto-promotion when sample size is below threshold.'
+    },
+    model_trainer: {
+      rootCause: 'The trainer has no real outcome sample set to learn from.',
+      fixPlan: [
+        'Build model records from settled signals only.',
+        'Track feature importance and bucket reliability.',
+        'Write model metadata explaining why a candidate is better or held.'
+      ],
+      implementationSteps: [
+        'Add feature extraction for minute, score state, pressure, odds, confidence, and source reliability.',
+        'Store candidate-model.json with sample counts and calibration buckets.',
+        'Reject candidate models with weak sample distribution.'
+      ],
+      successTarget: 'Candidate model has enough samples and documented reliability per bucket.',
+      riskControl: 'A model without samples is diagnostic only, never promotable.'
+    },
+    benchmark_promotion: {
+      rootCause: 'Promotion is correctly held because candidate samples are not enough.',
+      fixPlan: [
+        'Keep autoPromote false until benchmark evidence is strong.',
+        'Add rollback model before any promotion.',
+        'Require lift plus calibration improvement.'
+      ],
+      implementationSteps: [
+        'Write explicit benchmark reasons.',
+        'Compare candidate vs current with Brier/log-loss/lift.',
+        'Save rollback-model.json before promotion.'
+      ],
+      successTarget: 'Promotion only when min samples, lift, and calibration gates all pass.',
+      riskControl: 'Manual review remains required unless all gates pass.'
+    },
+    continuous_runtime: {
+      rootCause: 'Free Render can sleep, so agent loops can pause after inactivity.',
+      fixPlan: [
+        'Persist last run state so wakeups continue cleanly.',
+        'Make health output show stale agents.',
+        'Use frontend/backend visits as natural wakeups in free mode.'
+      ],
+      implementationSteps: [
+        'Add stale-run warnings to supervisor state.',
+        'Avoid assuming loops ran while service was sleeping.',
+        'Expose next expected run per agent.'
+      ],
+      successTarget: 'After Render wakeup, all agents recover and write fresh status within 2 minutes.',
+      riskControl: 'Do not depend on free Render for true 24/7 continuous work.'
+    },
+    persistent_storage: {
+      rootCause: 'Agent data stored on Render filesystem can disappear on redeploy or instance reset.',
+      fixPlan: [
+        'Keep JSONL local fallback but support durable external storage later.',
+        'Export critical agent data regularly.',
+        'Protect signals, outcomes, model, source health, and strategy files.'
+      ],
+      implementationSteps: [
+        'Add storage status to /agents/status.',
+        'Add import/export endpoints or artifact bundles.',
+        'Prepare optional durable store adapter without requiring paid services.'
+      ],
+      successTarget: 'No loss of history, outcomes, or model state after deploy.',
+      riskControl: 'Never overwrite non-empty stores with empty fallback data.'
+    },
+    production_maturity: {
+      rootCause: 'Deployment is working, but smoke checks and release safety are still manual.',
+      fixPlan: [
+        'Document exact deploy checks.',
+        'Expose health/smoke endpoints for live, agents, final-score, and history safety.',
+        'Keep code changes review-gated.'
+      ],
+      implementationSteps: [
+        'Add README smoke checklist.',
+        'Add /agents/status interpretation guide.',
+        'Package backend/frontend zips with version notes.'
+      ],
+      successTarget: 'Every deploy can be checked in under 2 minutes with clear pass/fail signals.',
+      riskControl: 'If health drops or history is at risk, rollback before further changes.'
+    },
+    history_screen: {
+      rootCause: 'Frontend history depends on browser storage and can be damaged by cache-clearing or version changes.',
+      fixPlan: [
+        'Keep backup copy before cache clear.',
+        'Restore from backup if main history is empty.',
+        'Make unresolved/stale reasons visible and actionable.'
+      ],
+      implementationSteps: [
+        'Verify canlibet_v7_history_backup is written on every non-empty save.',
+        'Use backend final-score checks for old open predictions.',
+        'Add repair flow that does not delete history.'
+      ],
+      successTarget: 'History survives cache clear, reload, frontend update, and deploy.',
+      riskControl: 'Never clear localStorage history during boot repair.'
+    }
+  };
+  return reports[featureId] || {
+    rootCause: 'Feature is below the target score.',
+    fixPlan: ['Inspect runtime metrics and add a targeted improvement task.'],
+    implementationSteps: ['Create a small reviewed change and verify with health metrics.'],
+    successTarget: 'Effective score rises above the improvement threshold.',
+    riskControl: 'Code changes require review.'
+  };
+}
+
 function improvementTaskFor(feature, signals) {
   const templates = {
     live_coverage: {
@@ -693,6 +915,7 @@ function improvementTaskFor(feature, signals) {
     featureLabel: feature.label,
     assignedAgent: feature.owner,
     goal: tpl.goal,
+    solution: solutionReportFor(feature.id, signals),
     allowedFiles: tpl.files,
     validationChecks: tpl.checks,
     baseScore: feature.score,
