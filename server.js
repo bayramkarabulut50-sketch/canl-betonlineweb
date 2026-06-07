@@ -513,6 +513,95 @@ function readAgentJson(name, fallback = null) {
   return readAgentDataJson(name, fallback);
 }
 
+function compactFinalText(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function teamLikelyMatches(a, b) {
+  const x = compactFinalText(a);
+  const y = compactFinalText(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+function extractEspnFinalScore(data) {
+  const comp = data?.header?.competitions?.[0] || data?.competitions?.[0] || null;
+  const status = comp?.status || {};
+  const statusText = String(status.type?.name || status.type?.description || status.displayClock || status.detail || '').toLowerCase();
+  const completed = status.type?.completed === true || status.completed === true || /final|ft|full time|aet|pen/.test(statusText);
+  const competitors = comp?.competitors || [];
+  if (!completed || !Array.isArray(competitors) || competitors.length < 2) return null;
+  const home = competitors.find(c => c.homeAway === 'home') || competitors[0];
+  const away = competitors.find(c => c.homeAway === 'away') || competitors[1];
+  const hg = parseInt(home.score, 10);
+  const ag = parseInt(away.score, 10);
+  if (!Number.isFinite(hg) || !Number.isFinite(ag)) return null;
+  return { hg, ag, status: status.type?.description || status.type?.name || 'final', source: 'espn_summary' };
+}
+
+async function fetchJsonLoose(url, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json,*/*' } });
+    const text = await res.text();
+    if (!res.ok || !text) return null;
+    return JSON.parse(text);
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function dateCandidates(dateLike) {
+  const out = new Set();
+  const base = dateLike ? new Date(dateLike) : new Date();
+  if (Number.isNaN(base.getTime())) return [new Date().toISOString().slice(0,10).replace(/-/g, '')];
+  for (const offset of [-1, 0, 1]) {
+    const d = new Date(base.getTime() + offset * 86400000);
+    out.add(String(d.getUTCFullYear()) + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0'));
+  }
+  return Array.from(out);
+}
+
+async function resolveEspnFinal({ matchId, home, away, date }) {
+  const slugs = ['all','eng.1','esp.1','ger.1','ita.1','fra.1','ned.1','por.1','swe.1','nor.1','den.1','fin.1','uefa.champions','uefa.europa','uefa.europa.conf'];
+  if (matchId && /^\d+$/.test(String(matchId))) {
+    for (const slug of slugs) {
+      for (const url of [
+        `https://site.web.api.espn.com/apis/site/v2/sports/soccer/${slug}/summary?event=${encodeURIComponent(matchId)}&lang=en&region=us`,
+        `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/summary?event=${encodeURIComponent(matchId)}`
+      ]) {
+        const finalScore = extractEspnFinalScore(await fetchJsonLoose(url));
+        if (finalScore) return finalScore;
+      }
+    }
+  }
+
+  for (const d of dateCandidates(date)) {
+    for (const slug of slugs) {
+      const data = await fetchJsonLoose(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${d}&limit=300`);
+      const events = Array.isArray(data?.events) ? data.events : [];
+      for (const ev of events) {
+        const comp = ev.competitions?.[0] || {};
+        const status = comp.status || ev.status || {};
+        const completed = status.type?.completed === true || /final|ft|full time|aet|pen/i.test(String(status.type?.description || status.type?.name || ''));
+        const competitors = comp.competitors || [];
+        const h = competitors.find(c => c.homeAway === 'home') || competitors[0];
+        const a = competitors.find(c => c.homeAway === 'away') || competitors[1];
+        if (!completed || !teamLikelyMatches(h?.team?.displayName || h?.team?.name, home) || !teamLikelyMatches(a?.team?.displayName || a?.team?.name, away)) continue;
+        const hg = parseInt(h.score, 10);
+        const ag = parseInt(a.score, 10);
+        if (Number.isFinite(hg) && Number.isFinite(ag)) return { hg, ag, status: status.type?.description || 'final', source:'espn_scoreboard' };
+      }
+    }
+  }
+  return null;
+}
+
 app.get('/agents/status', (_, res) => {
   res.json({
     success: true,
@@ -551,6 +640,21 @@ app.get('/agents/promotion', (_, res) => {
     decision: readAgentJson('latest-promotion-decision.json', null),
     benchmark: readAgentJson('latest-benchmark.json', null),
   });
+});
+
+app.get('/final-score', async (req, res) => {
+  try {
+    const result = await resolveEspnFinal({
+      matchId: req.query.matchId || req.query.id,
+      home: req.query.home,
+      away: req.query.away,
+      date: req.query.date || req.query.createdAt
+    });
+    if (result) return res.json({ success:true, found:true, ...result });
+    res.json({ success:true, found:false, reason:'final_score_not_found' });
+  } catch (err) {
+    res.status(200).json({ success:false, found:false, error:err.message });
+  }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
