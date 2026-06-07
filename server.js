@@ -613,6 +613,8 @@ app.get('/agents/status', (_, res) => {
     learning: readAgentJson('latest-learning.json', null),
     benchmark: readAgentJson('latest-benchmark.json', null),
     promotion: readAgentJson('latest-promotion-decision.json', null),
+    improvement: readAgentJson('latest-improvement-plan.json', null),
+    improvementTaskBoard: readAgentJson('improvement-task-board.json', null),
   });
 });
 
@@ -639,6 +641,14 @@ app.get('/agents/promotion', (_, res) => {
     success: true,
     decision: readAgentJson('latest-promotion-decision.json', null),
     benchmark: readAgentJson('latest-benchmark.json', null),
+  });
+});
+
+app.get('/agents/improvement', (_, res) => {
+  res.json({
+    success: true,
+    plan: readAgentJson('latest-improvement-plan.json', null),
+    taskBoard: readAgentJson('improvement-task-board.json', null),
   });
 });
 
