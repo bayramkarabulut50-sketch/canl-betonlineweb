@@ -78,6 +78,13 @@ async function runPromotionLoop() {
 
 async function runImprovementLoop() {
   await runNamed('improvement-orchestrator-agent', agents.improvementOrchestratorAgent);
+  await runNamed('storage-guard-agent', agents.storageGuardAgent);
+  await runNamed('performance-analytics-agent', agents.performanceAnalyticsAgent);
+  await runNamed('adapter-blueprint-agent', agents.adapterBlueprintAgent);
+  await runNamed('threshold-tuning-agent', agents.thresholdTuningAgent);
+  await runNamed('alert-agent', agents.alertAgent);
+  await runNamed('daily-report-agent', agents.dailyReportAgent);
+  await runNamed('capability-scorecard-agent', agents.capabilityScorecardAgent);
 }
 
 async function main() {

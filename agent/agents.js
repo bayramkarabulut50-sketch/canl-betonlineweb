@@ -21,6 +21,36 @@ function signalKey(match, signal) {
   ].join('|');
 }
 
+function compactKey(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function marketFromText(v) {
+  const s = String(v || '').toLowerCase();
+  if (/üst|over/.test(s)) return 'over_goals';
+  if (/alt|under/.test(s)) return 'under_goals';
+  if (/kg|btts|both/.test(s)) return 'btts';
+  if (/draw|beraber/.test(s)) return 'draw';
+  if (/home|ev|1\b/.test(s)) return 'home_win';
+  if (/away|dep|2\b/.test(s)) return 'away_win';
+  return compactKey(s).slice(0, 48) || 'unknown';
+}
+
+function signalOutcomeMatch(signal, outcome) {
+  if (!signal || !outcome) return false;
+  if (signal.key && outcome.key && signal.key === outcome.key) return true;
+  const signalMatch = compactKey(signal.matchId);
+  const outcomeMatch = compactKey(outcome.matchId || outcome.id);
+  if (signalMatch && outcomeMatch && signalMatch !== outcomeMatch) return false;
+  const signalMarket = marketFromText(signal.signal && (signal.signal.id || signal.signal.label || signal.signal.market));
+  const outcomeMarket = marketFromText(outcome.signalId || outcome.type || outcome.market || outcome.bet);
+  if (signalMarket !== 'unknown' && outcomeMarket !== 'unknown' && signalMarket !== outcomeMarket) return false;
+  const sMinute = n(signal.minute, null);
+  const oMinute = n(outcome.minute, null);
+  if (sMinute != null && oMinute != null && Math.abs(sMinute - oMinute) > 12) return false;
+  return !!(signalMatch || outcomeMatch);
+}
+
 function isAnalyzable(match) {
   if (!match || String(match.match_live) !== '1') return false;
   if (n(match.validationScore) < config.thresholds.minValidationScore) return false;
@@ -394,16 +424,22 @@ function learningAgent() {
   const groups = {};
 
   for (const s of signals) {
-    const out = outcomeByKey.get(s.key);
+    const out = outcomeByKey.get(s.key) || outcomes.find(o => signalOutcomeMatch(s, o));
     if (!out || !['won', 'lost'].includes(out.result)) continue;
     const signalId = s.signal && (s.signal.id || s.signal.label) || 'unknown';
     const minuteBand = Math.floor(n(s.minute) / 10) * 10;
     const source = s.source || 'unknown';
+    const league = s.league || 'unknown';
+    const market = marketFromText(signalId);
     const keys = [
       `signal:${signalId}`,
+      `market:${market}`,
       `minute:${minuteBand}`,
       `source:${source}`,
-      `signal_source:${signalId}|${source}`
+      `league:${compactKey(league).slice(0, 40) || 'unknown'}`,
+      `signal_source:${signalId}|${source}`,
+      `market_source:${market}|${source}`,
+      `market_minute:${market}|${minuteBand}`
     ];
     for (const key of keys) {
       groups[key] = groups[key] || { key, total: 0, won: 0, lost: 0, confSum: 0 };
@@ -984,6 +1020,297 @@ function improvementOrchestratorAgent() {
   return report;
 }
 
+function storageGuardAgent() {
+  const critical = [
+    'signals.jsonl',
+    'outcomes.jsonl',
+    'source-health.jsonl',
+    'latest-source-health.json',
+    'latest-learning.json',
+    'candidate-model.json',
+    'current-model.json',
+    'candidate-strategy.json',
+    'current-strategy.json',
+    'source-bindings.json',
+    'latest-improvement-plan.json'
+  ];
+  const files = critical.map(name => {
+    let size = 0;
+    let exists = false;
+    try {
+      const stat = fs.statSync(store.file(name));
+      exists = true;
+      size = stat.size;
+    } catch (_) {}
+    return { name, exists, size, healthy: exists && size > 0 };
+  });
+  const missing = files.filter(f => !f.exists).map(f => f.name);
+  const empty = files.filter(f => f.exists && f.size === 0).map(f => f.name);
+  const report = {
+    agent: 'storage-guard-agent',
+    ok: missing.length === 0 || files.some(f => f.name === 'signals.jsonl' && f.healthy),
+    dataDir: config.dataDir,
+    files,
+    missing,
+    empty,
+    exportReady: true,
+    recommendation: missing.length || empty.length
+      ? 'export_and_restore_critical_agent_data_after_deploy'
+      : 'storage_files_present'
+  };
+  store.writeJson('latest-storage-guard.json', report);
+  store.appendJsonl('storage-guard-runs.jsonl', report);
+  return report;
+}
+
+function performanceAnalyticsAgent() {
+  const signals = store.readJsonl('signals.jsonl', 50000);
+  const outcomes = store.readJsonl('outcomes.jsonl', 50000);
+  const sourceHealth = store.readJsonl('source-health.jsonl', 500);
+  const outcomeFor = s => outcomes.find(o => signalOutcomeMatch(s, o));
+  const groups = {};
+  function add(group, key, result, pnl) {
+    const id = `${group}:${key || 'unknown'}`;
+    groups[id] = groups[id] || { group, key: key || 'unknown', total: 0, won: 0, lost: 0, void: 0, pnl: 0 };
+    groups[id].total++;
+    if (result === 'won') groups[id].won++;
+    else if (result === 'lost') groups[id].lost++;
+    else groups[id].void++;
+    groups[id].pnl += n(pnl);
+  }
+  for (const s of signals) {
+    const o = outcomeFor(s);
+    if (!o) continue;
+    const result = o.result;
+    const signalId = s.signal && (s.signal.id || s.signal.label) || 'unknown';
+    add('source', s.source || 'unknown', result, o.pnl);
+    add('league', compactKey(s.league).slice(0, 50) || 'unknown', result, o.pnl);
+    add('market', marketFromText(signalId), result, o.pnl);
+    add('confidenceBand', `${Math.floor(n(s.signal && s.signal.confidence, 0) / 10) * 10}`, result, o.pnl);
+  }
+  const rows = Object.values(groups).map(g => {
+    const settled = g.won + g.lost;
+    return Object.assign(g, {
+      settled,
+      winRate: settled ? Number((g.won / settled).toFixed(3)) : null,
+      roi: settled ? Number((g.pnl / Math.max(1, settled * 100)).toFixed(3)) : null,
+      reliable: settled >= 30
+    });
+  }).sort((a, b) => b.settled - a.settled);
+  const latestHealth = sourceHealth[sourceHealth.length - 1] || store.readJson('latest-source-health.json', null);
+  const trend = sourceHealth.slice(-48).map(r => ({
+    at: r.at || r.agentAt,
+    liveCount: n(r.liveCount),
+    signalEligible: n(r.signalEligible),
+    signalEligibleRatio: n(r.liveCount) ? Number((n(r.signalEligible) / n(r.liveCount)).toFixed(3)) : 0
+  }));
+  const report = {
+    agent: 'performance-analytics-agent',
+    generatedAt: new Date().toISOString(),
+    signals: signals.length,
+    outcomes: outcomes.length,
+    latestLiveCount: latestHealth ? n(latestHealth.liveCount) : 0,
+    latestSignalEligible: latestHealth ? n(latestHealth.signalEligible) : 0,
+    bySource: rows.filter(r => r.group === 'source').slice(0, 50),
+    byLeague: rows.filter(r => r.group === 'league').slice(0, 50),
+    byMarket: rows.filter(r => r.group === 'market').slice(0, 50),
+    byConfidenceBand: rows.filter(r => r.group === 'confidenceBand').slice(0, 20),
+    metricTrend: trend
+  };
+  store.writeJson('latest-performance-analytics.json', report);
+  store.appendJsonl('performance-analytics-runs.jsonl', report);
+  return report;
+}
+
+function adapterBlueprintAgent() {
+  const discovery = store.readJson('latest-source-discovery.json', null);
+  const candidates = discovery ? [...(discovery.adapterCandidates || []), ...(discovery.watchCandidates || [])] : [];
+  const blueprints = candidates.slice(0, 20).map(c => {
+    const provider = sourceProviderFromCandidate(c) || `${compactKey(c.provider || c.id)}_adapter`;
+    const fields = ['match_id', 'home', 'away', 'league', 'minute', 'score', 'status'];
+    if (c.hasStatHints) fields.push('shots', 'shots_on_target', 'corners', 'possession');
+    if (c.hasOddsHints) fields.push('odds', 'oddsSource', 'oddsQuality');
+    return {
+      sourceId: c.id,
+      provider,
+      status: c.status,
+      score: c.score,
+      recommendation: c.recommendation,
+      adapterFile: `backend/sources/source_${provider}.js`,
+      requiredFields: fields,
+      parserPlan: c.type === 'json'
+        ? 'Create JSON adapter with strict field mapping and no synthetic stats.'
+        : 'Keep HTML source watch-only until selectors are stable and parsed quality is proven.',
+      enableGate: {
+        minScore: 65,
+        requiresLiveHints: true,
+        requiresParsedVisibleRows: true,
+        requiresNoApiKeyBlock: true
+      },
+      risk: c.status === 403 || c.status === 429 ? 'blocked_or_rate_limited' : (c.type === 'html' ? 'html_structure_can_change' : 'normal')
+    };
+  });
+  const report = {
+    agent: 'adapter-blueprint-agent',
+    generatedAt: new Date().toISOString(),
+    blueprintCount: blueprints.length,
+    blueprints,
+    nextBest: blueprints.filter(b => b.score >= 65 && b.risk === 'normal').slice(0, 5)
+  };
+  store.writeJson('latest-adapter-blueprints.json', report);
+  store.appendJsonl('adapter-blueprint-runs.jsonl', report);
+  return report;
+}
+
+function thresholdTuningAgent() {
+  const learning = store.readJson('latest-learning.json', null);
+  const sourceHealth = store.readJson('latest-source-health.json', null);
+  const signals = featureRuntimeSignals();
+  const proposals = [];
+  if (signals.liveCount > 0 && signals.signalEligibleRatio < 0.08) {
+    proposals.push({
+      type: 'quality_gate_audit',
+      action: 'inspect_reliability_and_stats_thresholds',
+      reason: 'signalEligible/live ratio is too low',
+      current: signals.signalEligibleRatio,
+      safeAutoApply: false
+    });
+  }
+  for (const p of ((learning && learning.weakPatterns) || []).slice(0, 10)) {
+    proposals.push({ type: 'decrease_confidence', pattern: p.key, delta: -3, evidence: p, safeAutoApply: false });
+  }
+  for (const p of ((learning && learning.strongPatterns) || []).slice(0, 10)) {
+    proposals.push({ type: 'increase_confidence', pattern: p.key, delta: 2, evidence: p, safeAutoApply: false });
+  }
+  for (const [provider, p] of Object.entries((sourceHealth && sourceHealth.providerQualityReport) || {})) {
+    if (n(p.visible) > 0 && n(p.lowDataRatio) > 0.8) {
+      proposals.push({
+        type: 'provider_watch_only',
+        provider,
+        reason: 'visible rows are mostly low-data',
+        lowDataRatio: p.lowDataRatio,
+        safeAutoApply: true
+      });
+    }
+  }
+  const report = {
+    agent: 'threshold-tuning-agent',
+    generatedAt: new Date().toISOString(),
+    mode: 'proposal_only_free_mode',
+    proposals,
+    recommendation: proposals.length ? 'review_threshold_proposals' : 'hold'
+  };
+  store.writeJson('latest-threshold-tuning.json', report);
+  store.appendJsonl('threshold-tuning-runs.jsonl', report);
+  return report;
+}
+
+function alertAgent() {
+  const health = store.readJson('latest-source-health.json', null);
+  const learning = store.readJson('latest-learning.json', null);
+  const storage = store.readJson('latest-storage-guard.json', null);
+  const benchmark = store.readJson('latest-benchmark.json', null);
+  const alerts = [];
+  function push(severity, code, message, action) {
+    alerts.push({ severity, code, message, action });
+  }
+  if (!health) push('critical', 'NO_SOURCE_HEALTH', 'Source health has not run yet.', 'Open /agents/status and wait for agent loop.');
+  else {
+    const ratio = n(health.liveCount) ? n(health.signalEligible) / n(health.liveCount) : 0;
+    if (n(health.liveCount) === 0) push('critical', 'NO_LIVE_MATCHES', 'No live matches are visible.', 'Check provider errors and source bindings.');
+    if (ratio < 0.08) push('warning', 'LOW_SIGNAL_ELIGIBLE_RATIO', `Only ${health.signalEligible}/${health.liveCount} live matches are signal eligible.`, 'Improve stats coverage and keep low-data providers watch-only.');
+    for (const rec of (health.recommendation || [])) {
+      push('warning', `SOURCE_${String(rec.provider || '').toUpperCase()}_${rec.action}`, `${rec.provider} should be ${rec.action}.`, rec.reason || 'Review source quality.');
+    }
+  }
+  if (!learning || n(learning.sampleSize) < 50) push('warning', 'LOW_LEARNING_SAMPLE', 'Learning sample is below 50 settled outcomes.', 'Connect settlement outcomes to backend outcomes.jsonl.');
+  if (storage && (storage.missing || []).length) push('warning', 'STORAGE_FILES_MISSING', 'Some agent data files are missing.', 'Use /agents/export after healthy runs.');
+  if (benchmark && benchmark.recommendation === 'hold') push('info', 'MODEL_PROMOTION_HELD', 'Model promotion is held by safety gate.', (benchmark.reasons || []).join(', '));
+  const report = {
+    agent: 'alert-agent',
+    generatedAt: new Date().toISOString(),
+    ok: !alerts.some(a => a.severity === 'critical'),
+    alertCount: alerts.length,
+    alerts
+  };
+  store.writeJson('latest-alerts.json', report);
+  store.appendJsonl('alert-runs.jsonl', report);
+  return report;
+}
+
+function dailyReportAgent() {
+  const health = store.readJson('latest-source-health.json', null);
+  const improvement = store.readJson('latest-improvement-plan.json', null);
+  const analytics = store.readJson('latest-performance-analytics.json', null);
+  const alerts = store.readJson('latest-alerts.json', null);
+  const blueprints = store.readJson('latest-adapter-blueprints.json', null);
+  const learning = store.readJson('latest-learning.json', null);
+  const topActions = [];
+  if (health && n(health.liveCount) && n(health.signalEligible) / Math.max(1, n(health.liveCount)) < 0.15) {
+    topActions.push('Improve stats-backed eligibility before increasing prediction volume.');
+  }
+  if (learning && n(learning.sampleSize) < 50) topActions.push('Feed settled history outcomes into backend learning store.');
+  if (blueprints && blueprints.nextBest && blueprints.nextBest.length) topActions.push(`Review adapter blueprint: ${blueprints.nextBest[0].adapterFile}.`);
+  for (const t of ((improvement && improvement.tasks) || []).slice(0, 5)) {
+    topActions.push(`${t.assignedAgent}: ${t.goal}`);
+  }
+  const report = {
+    agent: 'daily-report-agent',
+    date: new Date().toISOString().slice(0, 10),
+    generatedAt: new Date().toISOString(),
+    summary: {
+      liveCount: health ? n(health.liveCount) : 0,
+      signalEligible: health ? n(health.signalEligible) : 0,
+      learningSamples: learning ? n(learning.sampleSize) : 0,
+      alerts: alerts ? n(alerts.alertCount) : 0,
+      adapterBlueprints: blueprints ? n(blueprints.blueprintCount) : 0,
+      outcomes: analytics ? n(analytics.outcomes) : 0
+    },
+    topActions: Array.from(new Set(topActions)).slice(0, 12),
+    status: alerts && alerts.alerts && alerts.alerts.some(a => a.severity === 'critical') ? 'needs_attention' : 'watching'
+  };
+  store.writeJson('latest-daily-report.json', report);
+  store.appendJsonl('daily-reports.jsonl', report);
+  return report;
+}
+
+function capabilityScorecardAgent() {
+  const alerts = store.readJson('latest-alerts.json', null);
+  const storage = store.readJson('latest-storage-guard.json', null);
+  const analytics = store.readJson('latest-performance-analytics.json', null);
+  const blueprints = store.readJson('latest-adapter-blueprints.json', null);
+  const tuning = store.readJson('latest-threshold-tuning.json', null);
+  const improvement = store.readJson('latest-improvement-plan.json', null);
+  const items = [
+    ['agent_health_tracking', 'Ajan saglik takibi', 8, 'active'],
+    ['solution_reporting', 'Cozum raporu uretme', improvement ? 8 : 6, improvement ? 'active' : 'waiting'],
+    ['storage_guard', 'Kalici veri koruma/free export hazirligi', storage ? 7 : 5, storage ? 'active' : 'waiting'],
+    ['alerts', 'Hata alarm sistemi', alerts ? 7 : 0, alerts ? 'active' : 'missing'],
+    ['daily_report', 'Gunluk otomatik rapor', 7, 'active'],
+    ['adapter_blueprints', 'Kaynak adapter onerisi', blueprints ? 7 : 0, blueprints ? 'active' : 'missing'],
+    ['performance_analytics', 'Lig/market/kaynak performans analizi', analytics ? 7 : 0, analytics ? 'active' : 'missing'],
+    ['threshold_tuning', 'Threshold tuning onerileri', tuning ? 7 : 0, tuning ? 'proposal_only' : 'missing'],
+    ['manual_review_package', 'Ucretsiz manuel onay/deploy paketi', 7, 'active'],
+    ['free_render_recovery', 'Render free uyku sonrasi toparlanma', 7, 'active']
+  ].map(([id, label, score, status]) => ({ id, label, score, status }));
+  const report = {
+    agent: 'capability-scorecard-agent',
+    generatedAt: new Date().toISOString(),
+    averageScore: Number((items.reduce((a, i) => a + i.score, 0) / items.length).toFixed(2)),
+    items,
+    belowSeven: items.filter(i => i.score < 7),
+    externalLimitations: [
+      { id: 'github_pr', label: 'GitHub PR acma', reason: 'Requires GitHub token and branch write permission.' },
+      { id: 'true_24_7_runtime', label: 'Gercek 7/24 calisma', reason: 'Requires always-on paid infrastructure or external uptime worker.' },
+      { id: 'llm_code_writer', label: 'Kendi kendine kod yazan ajan', reason: 'Requires an LLM/API or a local model runtime.' }
+    ],
+    note: 'Free-mode scorecard only rates features implemented without paid services. Token/paid-only capabilities are listed separately as external limitations.'
+  };
+  store.writeJson('latest-capability-scorecard.json', report);
+  store.appendJsonl('capability-scorecard-runs.jsonl', report);
+  return report;
+}
+
 module.exports = {
   sourceDiscoveryAgent,
   sourceAutoBindAgent,
@@ -994,5 +1321,12 @@ module.exports = {
   modelTrainerAgent,
   modelBenchmarkAgent,
   promotionGuardianAgent,
-  improvementOrchestratorAgent
+  improvementOrchestratorAgent,
+  storageGuardAgent,
+  performanceAnalyticsAgent,
+  adapterBlueprintAgent,
+  thresholdTuningAgent,
+  alertAgent,
+  dailyReportAgent,
+  capabilityScorecardAgent
 };

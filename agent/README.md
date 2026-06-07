@@ -48,6 +48,27 @@ CANLIBET_EMBED_AGENT=true
 - `promotion-guardian-agent`: promotes only when rules allow it.
 - `improvement-orchestrator-agent`: proposes bounded improvement work for
   features scoring 6/10 or lower.
+- `storage-guard-agent`: checks critical free-mode data files and export readiness.
+- `performance-analytics-agent`: builds source, league, market, and confidence-band performance reports.
+- `adapter-blueprint-agent`: turns healthy source candidates into adapter implementation briefs.
+- `threshold-tuning-agent`: proposes safe threshold changes without auto-applying risky changes.
+- `alert-agent`: creates action-oriented warnings for source, learning, model, and storage issues.
+- `daily-report-agent`: writes a daily operator report with top actions.
+- `capability-scorecard-agent`: tracks which agent capabilities are active, limited, or external-token dependent.
+
+## Free Improvement Layer
+
+This version adds the highest-value features that can run without paid services:
+
+- `/agents/report`: daily report, alerts, analytics, scorecard, and improvement plan.
+- `/agents/alerts`: current action-oriented warnings.
+- `/agents/analytics`: source/league/market performance, threshold proposals, and adapter blueprints.
+- `/agents/export`: JSON export of critical agent data and recent JSONL rows.
+- `/agents/outcomes`: settlement bridge endpoint used by the frontend to feed won/lost/void results into learning.
+
+The free layer does not open GitHub PRs or run true always-on infrastructure.
+Instead, it provides reviewable tasks, adapter blueprints, alerts, export/import
+readiness, and learning data capture inside the existing Render web service.
 
 ## Improvement Orchestrator Agent
 
