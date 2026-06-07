@@ -76,6 +76,10 @@ async function runPromotionLoop() {
   await runNamed('promotion-guardian-agent', agents.promotionGuardianAgent);
 }
 
+async function runImprovementLoop() {
+  await runNamed('improvement-orchestrator-agent', agents.improvementOrchestratorAgent);
+}
+
 async function main() {
   store.ensureDir();
   store.writeJson('agent-supervisor-state.json', state);
@@ -90,12 +94,14 @@ async function main() {
   await runLearningLoop();
   await runModelLoop();
   await runPromotionLoop();
+  await runImprovementLoop();
 
   setInterval(runFastLoop, config.loopMs);
   setInterval(runDiscoveryLoop, config.sourceHealthMs);
   setInterval(runLearningLoop, config.learningMs);
   setInterval(runModelLoop, config.modelTrainingMs);
   setInterval(runPromotionLoop, config.promotionMs);
+  setInterval(runImprovementLoop, config.improvementMs);
 }
 
 main().catch(err => {

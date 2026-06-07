@@ -46,6 +46,42 @@ CANLIBET_EMBED_AGENT=true
 - `model-trainer-agent`: creates a calibration table model from historical outcomes.
 - `model-benchmark-agent`: compares current and candidate models.
 - `promotion-guardian-agent`: promotes only when rules allow it.
+- `improvement-orchestrator-agent`: proposes bounded improvement work for
+  features scoring 6/10 or lower.
+
+## Improvement Orchestrator Agent
+
+The `improvement-orchestrator-agent` is a design-only coordinator for weak
+feature areas. It reads review scores, benchmark notes, learning output, and
+source-health summaries, then selects only features with a score of 6/10 or
+lower. For each selected feature it creates a small improvement brief with:
+
+- the feature name and current score;
+- the failing evidence or missing capability;
+- a target outcome that would justify a higher score;
+- the narrowest safe task that can be delegated to a sub-agent;
+- the files or data contracts the sub-agent may inspect or propose changes for.
+
+Sub-agent tasks are produced as independent work packets. Each packet must name
+one owner agent, one objective, expected inputs, expected output artifacts, and
+acceptance checks. Example task types include source reliability investigation,
+signal-quality analysis, strategy mutation proposal, model calibration review,
+benchmark comparison, and promotion-readiness review. The orchestrator does not
+merge packets together unless they touch the same feature and can be completed
+without expanding the file scope.
+
+Safety boundaries:
+
+- it may propose changes, candidate strategies, or review tasks, but must not
+  directly promote a strategy or model;
+- it must keep each sub-agent packet scoped to the files and contracts required
+  for that packet;
+- it must avoid reverting or overwriting unrelated changes from concurrent
+  agents;
+- it must require benchmark evidence before any promotion request reaches
+  `promotion-guardian-agent`;
+- it must quarantine tasks that depend on blocked, rate-limited, or unhealthy
+  public sources until `source-health-agent` reports recovery.
 
 ## Data Files
 

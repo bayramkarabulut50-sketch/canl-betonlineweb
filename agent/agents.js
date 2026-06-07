@@ -578,6 +578,189 @@ function promotionGuardianAgent() {
   return decision;
 }
 
+function featureRuntimeSignals() {
+  const sourceHealth = store.readJson('latest-source-health.json', null);
+  const sourceDiscovery = store.readJson('latest-source-discovery.json', null);
+  const signalCapture = store.readJson('latest-signal-capture.json', null);
+  const learning = store.readJson('latest-learning.json', null);
+  const benchmark = store.readJson('latest-benchmark.json', null);
+  const liveCount = n(sourceHealth && sourceHealth.liveCount);
+  const signalEligible = n(sourceHealth && sourceHealth.signalEligible);
+  const captured = n(signalCapture && signalCapture.captured);
+  const adapterCandidates = (sourceDiscovery && sourceDiscovery.adapterCandidates || []).length;
+  const settledSignals = n(learning && learning.settledSignals);
+  const modelSamples = n(benchmark && benchmark.candidateSamples);
+
+  return {
+    liveCount,
+    signalEligible,
+    captured,
+    adapterCandidates,
+    settledSignals,
+    modelSamples,
+    signalEligibleRatio: liveCount ? Number((signalEligible / liveCount).toFixed(3)) : 0,
+    capturedRatio: liveCount ? Number((captured / liveCount).toFixed(3)) : 0
+  };
+}
+
+function runtimePenalty(featureId, signals) {
+  if (featureId === 'live_coverage' && signals.liveCount < 40) return 0.5;
+  if (featureId === 'stats_coverage' && signals.signalEligibleRatio < 0.2) return 1.0;
+  if (featureId === 'odds_coverage') return 0.5;
+  if (featureId === 'settlement' && signals.settledSignals < 50) return 0.5;
+  if (featureId === 'machine_learning' && signals.modelSamples < 200) return 0.75;
+  if (featureId === 'persistent_storage') return 1.0;
+  return 0;
+}
+
+function improvementTaskFor(feature, signals) {
+  const templates = {
+    live_coverage: {
+      goal: 'Increase real global live coverage without admitting noisy/fake rows.',
+      files:['backend/sources/*','backend/normalizer.js','backend/agent/source-candidates.json'],
+      checks:['/live?force=true visible count', 'providerReport parsed/visible ratios', 'rejectedSamples quality']
+    },
+    source_discovery: {
+      goal: 'Find and rank new public source candidates, then prepare adapter specs for healthy candidates.',
+      files:['backend/agent/source-candidates.json','backend/agent/agents.js'],
+      checks:['latest-source-discovery.json', 'adapterCandidates count', 'blocked_do_not_use count']
+    },
+    stats_coverage: {
+      goal: 'Improve shots/corners/possession extraction and stats-backed signal eligibility.',
+      files:['backend/sources/source_espn_json.js','backend/normalizer.js','backend/signal-engine.js'],
+      checks:['statsCoverage', 'dataReliabilityScore distribution', 'signalEligible/live ratio']
+    },
+    odds_coverage: {
+      goal: 'Improve real odds availability and prevent synthetic/cache odds from entering value decisions.',
+      files:['frontend/core.js','frontend/analysis.js','backend/server.js'],
+      checks:['oddsMatchedCount', 'hasRealOdds count', 'no synthetic odds in ROI']
+    },
+    value_predictions: {
+      goal: 'Reduce low-value signals and require stronger quality + value evidence before surfacing predictions.',
+      files:['frontend/analysis.js','backend/signal-engine.js'],
+      checks:['actionable count', 'watch vs action ratio', 'false positive patterns']
+    },
+    history_screen: {
+      goal: 'Protect prediction history, improve repair/export/import, and make review reasons actionable.',
+      files:['frontend/analysis.js','frontend/app.js','frontend/index.html'],
+      checks:['canlibet_v7_history_backup exists', 'open review count', 'export/import works']
+    },
+    settlement: {
+      goal: 'Resolve historical predictions from final-score sources and reduce needs_review/stale records.',
+      files:['backend/server.js','frontend/analysis.js'],
+      checks:['/final-score hit rate', 'needs_review count', 'settled/open ratio']
+    },
+    learning_system: {
+      goal: 'Use settled outcomes to find reliable weak/strong patterns with sample-size guards.',
+      files:['backend/agent/agents.js','frontend/app.js'],
+      checks:['latest-learning.json weakPatterns/strongPatterns', 'minimum samples respected']
+    },
+    machine_learning: {
+      goal: 'Move from rules/calibration table toward trainable models with benchmarked promotion gates.',
+      files:['backend/agent/agents.js'],
+      checks:['candidate-model.json samples', 'latest-benchmark.json recommendation']
+    },
+    model_trainer: {
+      goal: 'Improve model feature extraction, bucket calibration, and model metadata quality.',
+      files:['backend/agent/agents.js'],
+      checks:['model-runs.jsonl', 'bucket reliability', 'candidateSamples']
+    },
+    benchmark_promotion: {
+      goal: 'Make old-vs-new comparison stricter with Brier/log-loss/lift and rollback evidence.',
+      files:['backend/agent/agents.js'],
+      checks:['latest-benchmark.json reasons', 'rollback-model.json exists before promotion']
+    },
+    continuous_runtime: {
+      goal: 'Keep free Render mode resilient, visible, and recoverable after sleep/redeploy.',
+      files:['backend/agent/embedded-supervisor.js','backend/server.js'],
+      checks:['agent-supervisor-state.json lastRuns freshness', 'errors empty']
+    },
+    persistent_storage: {
+      goal: 'Add durable storage plan/adapter so signals, outcomes, and source health survive redeploys.',
+      files:['backend/agent/store.js','backend/agent/agents.js'],
+      checks:['storage backend selected', 'jsonl fallback works', 'no data loss on restart']
+    },
+    production_maturity: {
+      goal: 'Add smoke checks, deployment checklists, and safer rollout artifacts.',
+      files:['backend/agent/README.md','backend/package.json'],
+      checks:['manual deploy checklist', 'syntax/smoke command documented']
+    }
+  };
+  const tpl = templates[feature.id] || { goal:'Improve weak feature safely.', files:[], checks:[] };
+  return {
+    id: `${feature.id}_${Date.now()}`,
+    featureId: feature.id,
+    featureLabel: feature.label,
+    assignedAgent: feature.owner,
+    goal: tpl.goal,
+    allowedFiles: tpl.files,
+    validationChecks: tpl.checks,
+    baseScore: feature.score,
+    effectiveScore: feature.effectiveScore,
+    priority: feature.priority,
+    status: 'assigned',
+    authority: {
+      canEditCode: config.improvementAuthority.autoApplyCode,
+      canApplySafeConfig: config.improvementAuthority.autoApplySafeConfig,
+      requiresReviewForCode: !config.improvementAuthority.autoApplyCode
+    },
+    runtimeSignals: signals,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function improvementOrchestratorAgent() {
+  const authority = config.improvementAuthority || {};
+  const signals = featureRuntimeSignals();
+  const scorecard = (config.featureScorecard || []).map(feature => {
+    const penalty = runtimePenalty(feature.id, signals);
+    const effectiveScore = Math.max(0, Number((n(feature.score, 0) - penalty).toFixed(2)));
+    return Object.assign({}, feature, {
+      runtimePenalty: penalty,
+      effectiveScore,
+      priority: Number((10 - effectiveScore).toFixed(2))
+    });
+  });
+  const weak = scorecard
+    .filter(f => f.effectiveScore <= n(authority.maxScore, 6))
+    .sort((a, b) => b.priority - a.priority);
+  const tasks = weak.map(f => improvementTaskFor(f, signals));
+  const subAgents = {};
+  for (const task of tasks) {
+    subAgents[task.assignedAgent] = subAgents[task.assignedAgent] || {
+      name: task.assignedAgent,
+      status: 'assigned',
+      tasks: []
+    };
+    subAgents[task.assignedAgent].tasks.push(task.id);
+  }
+  const report = {
+    agent: 'improvement-orchestrator-agent',
+    enabled: authority.enabled !== false,
+    mode: config.mode,
+    maxScore: n(authority.maxScore, 6),
+    runtimeSignals: signals,
+    weakFeatureCount: weak.length,
+    weakFeatures: weak,
+    subAgents: Object.values(subAgents),
+    tasks,
+    policy: {
+      autoApplySafeConfig: !!authority.autoApplySafeConfig,
+      autoApplyCode: !!authority.autoApplyCode,
+      codeChangesRequireReview: !authority.autoApplyCode
+    }
+  };
+
+  store.writeJson('latest-improvement-plan.json', report);
+  store.writeJson('improvement-task-board.json', {
+    updatedAt: new Date().toISOString(),
+    openTasks: tasks,
+    subAgents: report.subAgents
+  });
+  store.appendJsonl('improvement-runs.jsonl', report);
+  return report;
+}
+
 module.exports = {
   sourceDiscoveryAgent,
   sourceAutoBindAgent,
@@ -587,5 +770,6 @@ module.exports = {
   strategyMutatorAgent,
   modelTrainerAgent,
   modelBenchmarkAgent,
-  promotionGuardianAgent
+  promotionGuardianAgent,
+  improvementOrchestratorAgent
 };
