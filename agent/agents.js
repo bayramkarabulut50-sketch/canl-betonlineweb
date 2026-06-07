@@ -374,14 +374,69 @@ async function signalCaptureAgent() {
   const matches = (res.data && Array.isArray(res.data.matches)) ? res.data.matches : [];
   const seen = new Set(store.readJson('seen-signals.json', []));
   const captured = [];
+  const diagnostics = {
+    totalMatches: matches.length,
+    analyzableMatches: 0,
+    skippedNotAnalyzable: 0,
+    analyzableWithoutSignals: 0,
+    lowConfidenceSignals: 0,
+    duplicateSignals: 0,
+    samples: []
+  };
 
   for (const match of matches) {
-    if (!isAnalyzable(match)) continue;
+    if (!isAnalyzable(match)) {
+      diagnostics.skippedNotAnalyzable++;
+      if (diagnostics.samples.length < 12) diagnostics.samples.push({
+        type: 'not_analyzable',
+        matchId: match && match.match_id,
+        home: match && match.match_hometeam_name,
+        away: match && match.match_awayteam_name,
+        source: match && (match._mergeProvider || match.source),
+        validationScore: match && match.validationScore,
+        dataReliabilityScore: match && match.dataReliabilityScore,
+        fakeRiskScore: match && match.fakeRiskScore,
+        qualityClass: match && match.qualityClass,
+        signalReadinessClass: match && match.signalReadinessClass
+      });
+      continue;
+    }
+    diagnostics.analyzableMatches++;
     const signals = Array.isArray(match.signals) ? match.signals : [];
+    if (!signals.length) {
+      diagnostics.analyzableWithoutSignals++;
+      if (diagnostics.samples.length < 12) diagnostics.samples.push({
+        type: 'analyzable_without_signals',
+        matchId: match.match_id,
+        home: match.match_hometeam_name,
+        away: match.match_awayteam_name,
+        source: match._mergeProvider || match.source,
+        minute: match.minute,
+        score: `${match.match_hometeam_score || 0}-${match.match_awayteam_score || 0}`,
+        validationScore: match.validationScore,
+        dataReliabilityScore: match.dataReliabilityScore,
+        signalReadinessClass: match.signalReadinessClass
+      });
+    }
     for (const signal of signals) {
-      if (n(signal.confidence) < config.thresholds.minSignalConfidence) continue;
+      if (n(signal.confidence) < config.thresholds.minSignalConfidence) {
+        diagnostics.lowConfidenceSignals++;
+        if (diagnostics.samples.length < 12) diagnostics.samples.push({
+          type: 'low_confidence_signal',
+          matchId: match.match_id,
+          home: match.match_hometeam_name,
+          away: match.match_awayteam_name,
+          signalId: signal.id || signal.label,
+          confidence: signal.confidence,
+          minRequired: config.thresholds.minSignalConfidence
+        });
+        continue;
+      }
       const key = signalKey(match, signal);
-      if (seen.has(key)) continue;
+      if (seen.has(key)) {
+        diagnostics.duplicateSignals++;
+        continue;
+      }
       seen.add(key);
       const record = {
         agent: 'signal-capture-agent',
@@ -412,9 +467,10 @@ async function signalCaptureAgent() {
   store.writeJson('latest-signal-capture.json', {
     at: new Date().toISOString(),
     captured: captured.length,
-    liveMatches: matches.length
+    liveMatches: matches.length,
+    diagnostics
   });
-  return { captured: captured.length, liveMatches: matches.length };
+  return { captured: captured.length, liveMatches: matches.length, diagnostics };
 }
 
 function learningAgent() {
@@ -1245,9 +1301,13 @@ function dailyReportAgent() {
   const alerts = store.readJson('latest-alerts.json', null);
   const blueprints = store.readJson('latest-adapter-blueprints.json', null);
   const learning = store.readJson('latest-learning.json', null);
+  const capture = store.readJson('latest-signal-capture.json', null);
   const topActions = [];
   if (health && n(health.liveCount) && n(health.signalEligible) / Math.max(1, n(health.liveCount)) < 0.15) {
     topActions.push('Improve stats-backed eligibility before increasing prediction volume.');
+  }
+  if (health && n(health.signalEligible) > 0 && capture && n(capture.captured) === 0) {
+    topActions.push('Inspect latest-signal-capture diagnostics: eligible match exists but no signal was captured.');
   }
   if (learning && n(learning.sampleSize) < 50) topActions.push('Feed settled history outcomes into backend learning store.');
   if (blueprints && blueprints.nextBest && blueprints.nextBest.length) topActions.push(`Review adapter blueprint: ${blueprints.nextBest[0].adapterFile}.`);
@@ -1262,6 +1322,7 @@ function dailyReportAgent() {
       liveCount: health ? n(health.liveCount) : 0,
       signalEligible: health ? n(health.signalEligible) : 0,
       learningSamples: learning ? n(learning.sampleSize) : 0,
+      capturedSignals: capture ? n(capture.captured) : 0,
       alerts: alerts ? n(alerts.alertCount) : 0,
       adapterBlueprints: blueprints ? n(blueprints.blueprintCount) : 0,
       outcomes: analytics ? n(analytics.outcomes) : 0
