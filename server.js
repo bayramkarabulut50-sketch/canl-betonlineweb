@@ -102,6 +102,29 @@ function readAgentDataJson(name, fallback = null) {
   }
 }
 
+function writeAgentDataJson(name, value) {
+  const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), JSON.stringify(value, null, 2));
+}
+
+function appendAgentDataJsonl(name, value) {
+  const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(path.join(dir, name), JSON.stringify(Object.assign({ at: new Date().toISOString() }, value)) + '\n');
+}
+
+function readAgentDataJsonl(name, limit = 5000) {
+  try {
+    const dir = process.env.CANLIBET_AGENT_DATA_DIR || path.join(__dirname, 'agent', 'data');
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).filter(Boolean).slice(-limit).map(line => JSON.parse(line));
+  } catch (_) {
+    return [];
+  }
+}
+
 function getActiveLiveAdapters() {
   const bindings = readAgentDataJson('source-bindings.json', {});
   const disabled = new Set([...(bindings.disabledProviders || []), ...(bindings.quarantinedProviders || [])]);
@@ -615,6 +638,13 @@ app.get('/agents/status', (_, res) => {
     promotion: readAgentJson('latest-promotion-decision.json', null),
     improvement: readAgentJson('latest-improvement-plan.json', null),
     improvementTaskBoard: readAgentJson('improvement-task-board.json', null),
+    storage: readAgentJson('latest-storage-guard.json', null),
+    analytics: readAgentJson('latest-performance-analytics.json', null),
+    adapterBlueprints: readAgentJson('latest-adapter-blueprints.json', null),
+    thresholdTuning: readAgentJson('latest-threshold-tuning.json', null),
+    alerts: readAgentJson('latest-alerts.json', null),
+    dailyReport: readAgentJson('latest-daily-report.json', null),
+    capabilityScorecard: readAgentJson('latest-capability-scorecard.json', null),
   });
 });
 
@@ -650,6 +680,105 @@ app.get('/agents/improvement', (_, res) => {
     plan: readAgentJson('latest-improvement-plan.json', null),
     taskBoard: readAgentJson('improvement-task-board.json', null),
   });
+});
+
+app.get('/agents/report', (_, res) => {
+  res.json({
+    success: true,
+    dailyReport: readAgentJson('latest-daily-report.json', null),
+    alerts: readAgentJson('latest-alerts.json', null),
+    analytics: readAgentJson('latest-performance-analytics.json', null),
+    scorecard: readAgentJson('latest-capability-scorecard.json', null),
+    improvement: readAgentJson('latest-improvement-plan.json', null),
+  });
+});
+
+app.get('/agents/alerts', (_, res) => {
+  res.json({
+    success: true,
+    alerts: readAgentJson('latest-alerts.json', null)
+  });
+});
+
+app.get('/agents/analytics', (_, res) => {
+  res.json({
+    success: true,
+    analytics: readAgentJson('latest-performance-analytics.json', null),
+    thresholdTuning: readAgentJson('latest-threshold-tuning.json', null),
+    adapterBlueprints: readAgentJson('latest-adapter-blueprints.json', null)
+  });
+});
+
+app.get('/agents/export', (_, res) => {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    json: {
+      supervisor: readAgentJson('agent-supervisor-state.json', null),
+      sourceBindings: readAgentJson('source-bindings.json', null),
+      sourceHealth: readAgentJson('latest-source-health.json', null),
+      learning: readAgentJson('latest-learning.json', null),
+      currentModel: readAgentJson('current-model.json', null),
+      candidateModel: readAgentJson('candidate-model.json', null),
+      currentStrategy: readAgentJson('current-strategy.json', null),
+      candidateStrategy: readAgentJson('candidate-strategy.json', null),
+      improvement: readAgentJson('latest-improvement-plan.json', null),
+      alerts: readAgentJson('latest-alerts.json', null),
+      dailyReport: readAgentJson('latest-daily-report.json', null),
+      scorecard: readAgentJson('latest-capability-scorecard.json', null)
+    },
+    jsonlTail: {
+      signals: readAgentDataJsonl('signals.jsonl', 1000),
+      outcomes: readAgentDataJsonl('outcomes.jsonl', 1000),
+      sourceHealth: readAgentDataJsonl('source-health.jsonl', 200),
+      improvementRuns: readAgentDataJsonl('improvement-runs.jsonl', 100)
+    }
+  };
+  res.json({ success: true, export: payload });
+});
+
+app.post('/agents/outcomes', (req, res) => {
+  const body = req.body || {};
+  const rows = Array.isArray(body) ? body : (Array.isArray(body.outcomes) ? body.outcomes : [body]);
+  const accepted = [];
+  for (const row of rows) {
+    const result = String(row.result || row.state || '').toLowerCase();
+    if (!['won', 'lost', 'void'].includes(result)) continue;
+    const record = {
+      agent: 'frontend-settlement-bridge',
+      key: row.key || [
+        row.matchId || row.id || '?',
+        row.signalId || row.type || row.market || row.bet || '?',
+        row.minute || 0,
+        row.score || ''
+      ].join('|'),
+      result,
+      matchId: row.matchId || row.id || null,
+      home: row.home || null,
+      away: row.away || null,
+      match: row.match || null,
+      league: row.league || null,
+      bet: row.bet || null,
+      type: row.type || row.market || null,
+      signalId: row.signalId || null,
+      minute: row.minute || null,
+      score: row.score || null,
+      finalScore: row.finalScore || null,
+      odds: row.odds || null,
+      stake: row.stake || null,
+      pnl: row.pnl || null,
+      source: row.settlementSource || row.source || 'frontend',
+      reason: row.settlementReason || row.reason || '',
+      settledAt: row.settledAt || new Date().toISOString()
+    };
+    appendAgentDataJsonl('outcomes.jsonl', record);
+    accepted.push(record);
+  }
+  writeAgentDataJson('latest-outcome-import.json', {
+    at: new Date().toISOString(),
+    accepted: accepted.length,
+    samples: accepted.slice(0, 20)
+  });
+  res.json({ success: true, accepted: accepted.length });
 });
 
 app.get('/final-score', async (req, res) => {
