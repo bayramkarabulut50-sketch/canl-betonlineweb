@@ -643,6 +643,7 @@ app.get('/agents/status', (_, res) => {
     adapterBlueprints: readAgentJson('latest-adapter-blueprints.json', null),
     thresholdTuning: readAgentJson('latest-threshold-tuning.json', null),
     alerts: readAgentJson('latest-alerts.json', null),
+    rootCauseFixPlan: readAgentJson('latest-root-cause-fix-plan.json', null),
     dailyReport: readAgentJson('latest-daily-report.json', null),
     capabilityScorecard: readAgentJson('latest-capability-scorecard.json', null),
   });
@@ -690,6 +691,7 @@ app.get('/agents/report', (_, res) => {
     analytics: readAgentJson('latest-performance-analytics.json', null),
     scorecard: readAgentJson('latest-capability-scorecard.json', null),
     improvement: readAgentJson('latest-improvement-plan.json', null),
+    rootCauseFixPlan: readAgentJson('latest-root-cause-fix-plan.json', null),
   });
 });
 
@@ -705,7 +707,8 @@ app.get('/agents/analytics', (_, res) => {
     success: true,
     analytics: readAgentJson('latest-performance-analytics.json', null),
     thresholdTuning: readAgentJson('latest-threshold-tuning.json', null),
-    adapterBlueprints: readAgentJson('latest-adapter-blueprints.json', null)
+    adapterBlueprints: readAgentJson('latest-adapter-blueprints.json', null),
+    rootCauseFixPlan: readAgentJson('latest-root-cause-fix-plan.json', null)
   });
 });
 
@@ -724,7 +727,8 @@ app.get('/agents/export', (_, res) => {
       improvement: readAgentJson('latest-improvement-plan.json', null),
       alerts: readAgentJson('latest-alerts.json', null),
       dailyReport: readAgentJson('latest-daily-report.json', null),
-      scorecard: readAgentJson('latest-capability-scorecard.json', null)
+      scorecard: readAgentJson('latest-capability-scorecard.json', null),
+      rootCauseFixPlan: readAgentJson('latest-root-cause-fix-plan.json', null)
     },
     jsonlTail: {
       signals: readAgentDataJsonl('signals.jsonl', 1000),

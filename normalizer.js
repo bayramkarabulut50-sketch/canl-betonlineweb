@@ -452,6 +452,9 @@ function summarizeDataQuality(matches) {
 
 function isSignalEligibleMatch(m) {
   if (!m || m.match_live !== '1') return false;
+  if ((m.fakeRiskScore || 0) >= 60) return false;
+  if (m.qualityClass === 'REAL_ANALYZABLE' && ['SIGNAL_READY','MONITOR_READY','ANALYZABLE_NO_TRIGGER'].includes(m.signalReadinessClass)) return true;
+  if (m.signalReadinessClass === 'MONITOR_READY' && (m.validationScore || 0) >= 55 && (m.dataReliabilityScore || 0) >= 45) return true;
   if ((m.validationScore || 0) >= 70 && (m.hasStats || (m.signalCount || 0) > 0)) return true;
   if (m.hasStats && (m.dataReliabilityScore || 0) >= 55 && (m.validationScore || 0) >= 55) return true;
   if ((m.signalCount || 0) > 0 || m.topSignal || m.signalMode === 'REAL_STATS_MONITOR') return true;
