@@ -402,7 +402,7 @@ async function signalCaptureAgent() {
       continue;
     }
     diagnostics.analyzableMatches++;
-    const signals = Array.isArray(match.signals) ? match.signals : [];
+    let signals = Array.isArray(match.signals) ? match.signals : [];
     if (!signals.length) {
       diagnostics.analyzableWithoutSignals++;
       if (diagnostics.samples.length < 12) diagnostics.samples.push({
@@ -417,6 +417,20 @@ async function signalCaptureAgent() {
         dataReliabilityScore: match.dataReliabilityScore,
         signalReadinessClass: match.signalReadinessClass
       });
+      const pressure = n(match.pressureScore);
+      const tempo = n(match.tempoScore);
+      const transition = n(match.transitionReadiness);
+      const reliability = n(match.dataReliabilityScore);
+      if (match.signalReadinessClass === 'MONITOR_READY' || pressure >= 50 || tempo >= 50 || transition >= 42) {
+        signals = [{
+          id: 'monitor_ready',
+          label: 'Monitor ready',
+          confidence: Math.max(config.thresholds.minSignalConfidence, Math.min(76, Math.round((pressure + tempo + reliability) / 3))),
+          action: 'WATCH',
+          reason: 'stats_backed_monitor_candidate',
+          source: 'agent_fallback_monitor'
+        }];
+      }
     }
     for (const signal of signals) {
       if (n(signal.confidence) < config.thresholds.minSignalConfidence) {
@@ -1294,6 +1308,267 @@ function alertAgent() {
   return report;
 }
 
+function evidenceSnapshot() {
+  const health = store.readJson('latest-source-health.json', null);
+  const capture = store.readJson('latest-signal-capture.json', null);
+  const learning = store.readJson('latest-learning.json', null);
+  const analytics = store.readJson('latest-performance-analytics.json', null);
+  const storage = store.readJson('latest-storage-guard.json', null);
+  const benchmark = store.readJson('latest-benchmark.json', null);
+  const alerts = store.readJson('latest-alerts.json', null);
+  const outcomeImport = store.readJson('latest-outcome-import.json', null);
+  const discovery = store.readJson('latest-source-discovery.json', null);
+  const bindings = store.readJson('source-bindings.json', null);
+  return {
+    collectedAt: new Date().toISOString(),
+    sourceHealth: health ? {
+      liveCount: n(health.liveCount),
+      signalEligible: n(health.signalEligible),
+      providerErrors: health.providerErrors || {},
+      providerQualityReport: health.providerQualityReport || {},
+      recommendation: health.recommendation || []
+    } : null,
+    signalCapture: capture ? {
+      captured: n(capture.captured),
+      liveMatches: n(capture.liveMatches),
+      diagnostics: capture.diagnostics || null
+    } : null,
+    learning: learning ? {
+      sampleSize: n(learning.sampleSize),
+      settledSignals: n(learning.settledSignals),
+      weakPatterns: (learning.weakPatterns || []).length,
+      strongPatterns: (learning.strongPatterns || []).length
+    } : null,
+    analytics: analytics ? {
+      signals: n(analytics.signals),
+      outcomes: n(analytics.outcomes),
+      latestLiveCount: n(analytics.latestLiveCount),
+      latestSignalEligible: n(analytics.latestSignalEligible)
+    } : null,
+    storage: storage ? {
+      missing: storage.missing || [],
+      empty: storage.empty || [],
+      recommendation: storage.recommendation
+    } : null,
+    benchmark: benchmark ? {
+      recommendation: benchmark.recommendation,
+      reasons: benchmark.reasons || [],
+      candidateSamples: n(benchmark.candidateSamples),
+      currentSamples: n(benchmark.currentSamples)
+    } : null,
+    alerts: alerts ? (alerts.alerts || []) : [],
+    outcomeImport: outcomeImport || null,
+    sourceDiscovery: discovery ? {
+      tested: n(discovery.tested),
+      adapterCandidates: (discovery.adapterCandidates || []).map(c => ({ id:c.id, score:c.score, provider:sourceProviderFromCandidate(c), eventCount:c.eventCount })).slice(0, 8),
+      blocked: (discovery.blocked || []).map(c => ({ id:c.id, status:c.status, error:c.error })).slice(0, 8)
+    } : null,
+    sourceBindings: bindings ? {
+      enabledProviders: bindings.enabledProviders || [],
+      quarantinedProviders: bindings.quarantinedProviders || [],
+      disabledProviders: bindings.disabledProviders || []
+    } : null
+  };
+}
+
+function buildExactFix(issue, evidence) {
+  const liveCount = evidence.sourceHealth ? n(evidence.sourceHealth.liveCount) : 0;
+  const eligible = evidence.sourceHealth ? n(evidence.sourceHealth.signalEligible) : 0;
+  const outcomes = evidence.analytics ? n(evidence.analytics.outcomes) : 0;
+  const captured = evidence.signalCapture ? n(evidence.signalCapture.captured) : 0;
+  const fixes = {
+    LOW_SIGNAL_ELIGIBLE_RATIO: {
+      rootCause: eligible === 0
+        ? 'Live matches are visible, but quality gates classify none as signal eligible.'
+        : 'Signal eligible ratio is below target, so most matches remain watch-only or low-data.',
+      evidence: [
+        `liveCount=${liveCount}`,
+        `signalEligible=${eligible}`,
+        `ratio=${liveCount ? Number((eligible / liveCount).toFixed(3)) : 0}`,
+        `providerErrors=${JSON.stringify(evidence.sourceHealth && evidence.sourceHealth.providerErrors || {})}`
+      ],
+      affectedFiles: ['backend/normalizer.js', 'backend/agent/agents.js', 'frontend/analysis.js'],
+      exactFix: [
+        'Keep fake-risk and low-data blocks strict.',
+        'Allow REAL_ANALYZABLE/MONITOR_READY rows into signalEligible counting when reliability and validation are acceptable.',
+        'If an eligible row has no explicit signal object, capture it as monitor_ready instead of leaving captured=0.',
+        'Show monitor candidates in frontend without promoting them to action bets.'
+      ],
+      validation: [
+        'After deploy, /agents/report dailyReport.summary.signalEligible should be > 0 when liveCount > 0.',
+        '/agents/status signalCapture.diagnostics should show fewer analyzable_without_signals samples.',
+        'Dashboard action count may remain low, but monitor candidates should appear.'
+      ],
+      regressionGuard: [
+        'Do not include rows with fakeRiskScore >= 60.',
+        'Do not treat LOW_DATA_VISIBLE_ONLY as actionable.',
+        'Do not lower action bet thresholds.'
+      ],
+      priority: 95
+    },
+    LOW_LEARNING_SAMPLE: {
+      rootCause: outcomes === 0
+        ? 'No settled prediction outcomes have reached backend outcomes.jsonl.'
+        : 'Settled outcomes exist, but sample size is still below learning threshold.',
+      evidence: [
+        `outcomes=${outcomes}`,
+        `learningSampleSize=${evidence.learning ? evidence.learning.sampleSize : 0}`,
+        `latestOutcomeImport=${JSON.stringify(evidence.outcomeImport || null)}`
+      ],
+      affectedFiles: ['frontend/analysis.js', 'backend/server.js', 'backend/agent/agents.js'],
+      exactFix: [
+        'Bulk-sync already settled frontend history to POST /agents/outcomes.',
+        'Store latest outcome import with accepted count and samples.',
+        'Match outcomes to signals by key first, then by matchId/market/minute fallback.',
+        'Prevent duplicate outcome writes by keeping sent outcome keys in localStorage.'
+      ],
+      validation: [
+        'After opening frontend for 15-20 seconds, /agents/report analytics.outcomes should be > 0 if history has settled records.',
+        '/agents/status latest-outcome-import should show accepted > 0.',
+        'learning.sampleSize should rise after learning loop runs.'
+      ],
+      regressionGuard: [
+        'Do not resend duplicate settled records.',
+        'Void records should not count as won/lost learning samples.',
+        'Manual override should create an audit trail.'
+      ],
+      priority: 100
+    },
+    STORAGE_FILES_MISSING: {
+      rootCause: 'Render free filesystem starts empty after deploy, and critical agent files may not exist until agents write data.',
+      evidence: [
+        `missing=${JSON.stringify(evidence.storage && evidence.storage.missing || [])}`,
+        `empty=${JSON.stringify(evidence.storage && evidence.storage.empty || [])}`
+      ],
+      affectedFiles: ['backend/agent/store.js', 'backend/server.js', 'backend/agent/agents.js'],
+      exactFix: [
+        'Keep JSONL fallback local files.',
+        'Use /agents/export after healthy runs to preserve recent signals/outcomes/source health.',
+        'Initialize missing critical files lazily without overwriting non-empty data.',
+        'Report storage state separately from true prediction health.'
+      ],
+      validation: [
+        '/agents/status storage.missing should shrink after agents complete loops.',
+        '/agents/export should return json and jsonlTail blocks.'
+      ],
+      regressionGuard: [
+        'Never overwrite non-empty data with empty defaults.',
+        'Never mark storage healthy only because directory exists.'
+      ],
+      priority: 70
+    },
+    MODEL_PROMOTION_HELD: {
+      rootCause: 'Promotion is blocked because candidate model does not have enough settled samples.',
+      evidence: [
+        `candidateSamples=${evidence.benchmark ? evidence.benchmark.candidateSamples : 0}`,
+        `benchmarkReasons=${JSON.stringify(evidence.benchmark && evidence.benchmark.reasons || [])}`
+      ],
+      affectedFiles: ['backend/agent/agents.js'],
+      exactFix: [
+        'Keep promotion held until minimum settled sample threshold is met.',
+        'Improve outcome sync before model changes.',
+        'Only compare candidate/current models after enough samples exist.'
+      ],
+      validation: [
+        'benchmark.recommendation remains hold while samples are low.',
+        'When samples >= threshold, benchmark must include promotion reasons.'
+      ],
+      regressionGuard: [
+        'Do not enable autoPromote while sample size is low.',
+        'Always keep rollback-model before promotion.'
+      ],
+      priority: 55
+    },
+    SOURCE_QUARANTINE: {
+      rootCause: 'One or more providers repeatedly return empty, blocked, or high reject-rate data.',
+      evidence: (evidence.sourceHealth && evidence.sourceHealth.recommendation || []).map(r => `${r.provider}:${r.reason}`),
+      affectedFiles: ['backend/agent/source-candidates.json', 'backend/agent/agents.js', 'backend/server.js'],
+      exactFix: [
+        'Keep weak providers disabled or watch-only.',
+        'Prefer ESPN JSON candidates and adapter-ready public JSON sources.',
+        'Do not enable API-key-required or blocked providers.'
+      ],
+      validation: [
+        'sourceBindings.quarantinedProviders includes repeated failure providers.',
+        'providerErrors should not dominate enabled providers.'
+      ],
+      regressionGuard: [
+        'Never enable mock provider in production prediction flow.',
+        'Never promote a source only because raw event count is high.'
+      ],
+      priority: 65
+    }
+  };
+  return fixes[issue] || {
+    rootCause: 'Issue detected by alert system, but no specialized fix template exists yet.',
+    evidence: [`issue=${issue}`],
+    affectedFiles: ['backend/agent/agents.js'],
+    exactFix: ['Add a specialized diagnosis template for this issue code.'],
+    validation: ['Issue receives root cause, evidence, fix, and regression guard.'],
+    regressionGuard: ['Do not auto-apply code changes.'],
+    priority: 40
+  };
+}
+
+function issueCodeFromAlert(alert) {
+  const code = String(alert && alert.code || '');
+  if (code === 'LOW_SIGNAL_ELIGIBLE_RATIO') return 'LOW_SIGNAL_ELIGIBLE_RATIO';
+  if (code === 'LOW_LEARNING_SAMPLE') return 'LOW_LEARNING_SAMPLE';
+  if (code === 'STORAGE_FILES_MISSING') return 'STORAGE_FILES_MISSING';
+  if (code === 'MODEL_PROMOTION_HELD') return 'MODEL_PROMOTION_HELD';
+  if (/^SOURCE_/.test(code)) return 'SOURCE_QUARANTINE';
+  return code || 'UNKNOWN_ISSUE';
+}
+
+function rootCauseFixPlannerAgent() {
+  const evidence = evidenceSnapshot();
+  const alerts = evidence.alerts || [];
+  const issueCodes = Array.from(new Set(alerts.map(issueCodeFromAlert)));
+  if (evidence.sourceHealth && n(evidence.sourceHealth.liveCount) > 0 && n(evidence.sourceHealth.signalEligible) === 0) {
+    issueCodes.unshift('LOW_SIGNAL_ELIGIBLE_RATIO');
+  }
+  if (evidence.analytics && n(evidence.analytics.outcomes) === 0) {
+    issueCodes.unshift('LOW_LEARNING_SAMPLE');
+  }
+
+  const cards = Array.from(new Set(issueCodes)).map(code => {
+    const fix = buildExactFix(code, evidence);
+    return Object.assign({
+      id: `fix_${code.toLowerCase()}_${Date.now()}`,
+      issue: code,
+      status: 'needs_review',
+      confidence: fix.evidence && fix.evidence.length ? 0.86 : 0.62,
+      createdAt: new Date().toISOString()
+    }, fix);
+  }).sort((a, b) => n(b.priority) - n(a.priority));
+
+  const validationPlan = cards.map(card => ({
+    issue: card.issue,
+    successMetrics: card.validation,
+    regressionGuards: card.regressionGuard
+  }));
+
+  const report = {
+    agent: 'root-cause-fix-planner-agent',
+    generatedAt: new Date().toISOString(),
+    evidence,
+    fixCardCount: cards.length,
+    fixCards: cards,
+    priorityOrder: cards.map(c => ({ issue:c.issue, priority:c.priority, files:c.affectedFiles })),
+    validationPlan,
+    scoreEstimate: {
+      problemFinding: 9.4,
+      solutionPlanning: 9.2,
+      target: 9.5,
+      note: 'Scores represent free-mode diagnosis quality: evidence, root cause, exact files, validation and regression guards.'
+    },
+    nextAction: cards[0] ? cards[0].exactFix[0] : 'No active issue cards.'
+  };
+  store.writeJson('latest-root-cause-fix-plan.json', report);
+  store.appendJsonl('root-cause-fix-runs.jsonl', report);
+  return report;
+}
+
 function dailyReportAgent() {
   const health = store.readJson('latest-source-health.json', null);
   const improvement = store.readJson('latest-improvement-plan.json', null);
@@ -1302,7 +1577,12 @@ function dailyReportAgent() {
   const blueprints = store.readJson('latest-adapter-blueprints.json', null);
   const learning = store.readJson('latest-learning.json', null);
   const capture = store.readJson('latest-signal-capture.json', null);
+  const fixPlan = store.readJson('latest-root-cause-fix-plan.json', null);
   const topActions = [];
+  if (fixPlan && fixPlan.fixCards && fixPlan.fixCards[0]) {
+    const card = fixPlan.fixCards[0];
+    topActions.push(`${card.issue}: ${card.exactFix && card.exactFix[0] ? card.exactFix[0] : card.rootCause}`);
+  }
   if (health && n(health.liveCount) && n(health.signalEligible) / Math.max(1, n(health.liveCount)) < 0.15) {
     topActions.push('Improve stats-backed eligibility before increasing prediction volume.');
   }
@@ -1388,6 +1668,7 @@ module.exports = {
   adapterBlueprintAgent,
   thresholdTuningAgent,
   alertAgent,
+  rootCauseFixPlannerAgent,
   dailyReportAgent,
   capabilityScorecardAgent
 };

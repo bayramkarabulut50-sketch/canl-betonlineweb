@@ -86,6 +86,7 @@ async function runImprovementLoop() {
   await runNamed('adapter-blueprint-agent', agents.adapterBlueprintAgent);
   await runNamed('threshold-tuning-agent', agents.thresholdTuningAgent);
   await runNamed('alert-agent', agents.alertAgent);
+  await runNamed('root-cause-fix-planner-agent', agents.rootCauseFixPlannerAgent);
   await runNamed('daily-report-agent', agents.dailyReportAgent);
   await runNamed('capability-scorecard-agent', agents.capabilityScorecardAgent);
 }

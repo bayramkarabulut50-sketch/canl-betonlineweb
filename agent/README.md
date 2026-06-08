@@ -53,6 +53,7 @@ CANLIBET_EMBED_AGENT=true
 - `adapter-blueprint-agent`: turns healthy source candidates into adapter implementation briefs.
 - `threshold-tuning-agent`: proposes safe threshold changes without auto-applying risky changes.
 - `alert-agent`: creates action-oriented warnings for source, learning, model, and storage issues.
+- `root-cause-fix-planner-agent`: converts alerts into evidence-backed root-cause fix cards.
 - `daily-report-agent`: writes a daily operator report with top actions.
 - `capability-scorecard-agent`: tracks which agent capabilities are active, limited, or external-token dependent.
 
@@ -65,6 +66,18 @@ This version adds the highest-value features that can run without paid services:
 - `/agents/analytics`: source/league/market performance, threshold proposals, and adapter blueprints.
 - `/agents/export`: JSON export of critical agent data and recent JSONL rows.
 - `/agents/outcomes`: settlement bridge endpoint used by the frontend to feed won/lost/void results into learning.
+
+`root-cause-fix-planner-agent` is the 9.5-target diagnosis layer. Each fix
+card contains:
+
+- issue code;
+- collected evidence;
+- probable root cause;
+- affected files;
+- exact fix steps;
+- validation metrics;
+- regression guards;
+- priority order.
 
 The free layer does not open GitHub PRs or run true always-on infrastructure.
 Instead, it provides reviewable tasks, adapter blueprints, alerts, export/import
