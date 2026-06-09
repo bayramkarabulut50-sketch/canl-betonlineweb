@@ -536,6 +536,55 @@ function readAgentJson(name, fallback = null) {
   return readAgentDataJson(name, fallback);
 }
 
+let _agentReportWarmupAt = 0;
+async function warmupAgentReportsIfNeeded() {
+  const hasReport = readAgentJson('latest-daily-report.json', null) &&
+    readAgentJson('latest-alerts.json', null) &&
+    readAgentJson('latest-root-cause-fix-plan.json', null);
+  if (hasReport) return { ran:false, reason:'report_exists' };
+  if (Date.now() - _agentReportWarmupAt < 30000) return { ran:false, reason:'recent_warmup' };
+  _agentReportWarmupAt = Date.now();
+  try {
+    const agents = require('./agent/agents');
+    const steps = [];
+    async function run(name, fn) {
+      const started = Date.now();
+      try {
+        const result = await fn();
+        steps.push({ name, ok:true, durationMs:Date.now() - started, summary:result && {
+          liveCount: result.liveCount,
+          signalEligible: result.signalEligible,
+          captured: result.captured,
+          sampleSize: result.sampleSize,
+          alertCount: result.alertCount,
+          fixCardCount: result.fixCardCount
+        }});
+      } catch (err) {
+        steps.push({ name, ok:false, durationMs:Date.now() - started, error:err.message });
+      }
+    }
+    await run('source-health-agent', agents.sourceHealthAgent);
+    await run('signal-capture-agent', agents.signalCaptureAgent);
+    await run('learning-agent', agents.learningAgent);
+    await run('model-trainer-agent', agents.modelTrainerAgent);
+    await run('model-benchmark-agent', agents.modelBenchmarkAgent);
+    await run('improvement-orchestrator-agent', agents.improvementOrchestratorAgent);
+    await run('storage-guard-agent', agents.storageGuardAgent);
+    await run('performance-analytics-agent', agents.performanceAnalyticsAgent);
+    await run('adapter-blueprint-agent', agents.adapterBlueprintAgent);
+    await run('threshold-tuning-agent', agents.thresholdTuningAgent);
+    await run('alert-agent', agents.alertAgent);
+    await run('root-cause-fix-planner-agent', agents.rootCauseFixPlannerAgent);
+    await run('daily-report-agent', agents.dailyReportAgent);
+    await run('capability-scorecard-agent', agents.capabilityScorecardAgent);
+    writeAgentDataJson('latest-agent-report-warmup.json', { at:new Date().toISOString(), steps });
+    return { ran:true, steps };
+  } catch (err) {
+    writeAgentDataJson('latest-agent-report-warmup.json', { at:new Date().toISOString(), error:err.message });
+    return { ran:false, error:err.message };
+  }
+}
+
 function compactFinalText(s) {
   return String(s || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -683,9 +732,11 @@ app.get('/agents/improvement', (_, res) => {
   });
 });
 
-app.get('/agents/report', (_, res) => {
+app.get('/agents/report', async (_, res) => {
+  const warmup = await warmupAgentReportsIfNeeded();
   res.json({
     success: true,
+    warmup,
     dailyReport: readAgentJson('latest-daily-report.json', null),
     alerts: readAgentJson('latest-alerts.json', null),
     analytics: readAgentJson('latest-performance-analytics.json', null),
